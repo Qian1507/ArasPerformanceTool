@@ -21,3 +21,7 @@ TestResults/
 
 # Logs
 *.log
+
+
+# Local IDE settings
+*.csproj.user
