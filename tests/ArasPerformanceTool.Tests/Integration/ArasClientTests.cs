@@ -126,4 +126,63 @@ public class ArasClientTests
     }
 
 
+    [Fact]
+    public async Task ExecuteAmlAsync_ShouldCreatePart()
+    {
+        // Arrange
+        var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
+        var password = Environment.GetEnvironmentVariable("ARAS_PASSWORD");
+
+        Assert.False(string.IsNullOrWhiteSpace(username));
+        Assert.False(string.IsNullOrWhiteSpace(password));
+
+        using var httpClient = new HttpClient();
+
+        var client = new ArasClient(
+            httpClient,
+            "http://localhost/InnovatorServer/OAuthServer/connect/token",
+            "InnovatorSolutions");
+
+        var token = await client.GetAccessTokenAsync(
+            username!,
+            password!);
+
+        const string serverUrl =
+            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx";
+
+        var itemNumber = $"LIA-PROJECT-{Guid.NewGuid():N}"[..24];
+
+        var aml = AmlBuilder.Create(
+            "Part",
+            new Dictionary<string, string>
+            {
+                ["item_number"] = itemNumber,
+                ["name"] = "AML Create Test"
+            });
+
+        // Act
+        var result = await client.ExecuteAmlAsync(
+            serverUrl,
+            token,
+            aml);
+
+        // Assert
+        var xml = System.Xml.Linq.XDocument.Parse(result);
+
+        var faults = xml.Descendants()
+            .Where(e => e.Name.LocalName == "Fault");
+
+        Assert.Empty(faults);
+
+        var createdItem = xml.Descendants()
+            .FirstOrDefault(e =>
+                e.Name.LocalName == "Item" &&
+                (string?)e.Attribute("type") == "Part");
+
+        Assert.NotNull(createdItem);
+
+        var id = (string?)createdItem.Attribute("id");
+        Assert.False(string.IsNullOrWhiteSpace(id));
+    }
+
 }

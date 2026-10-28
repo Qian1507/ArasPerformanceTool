@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ArasPerformanceTool.Engine\ArasPerformanceTool.Engine.csproj" />
+    <ProjectReference Include="..\..\src\ArasPerformanceTool.Api\ArasPerformanceTool.Api.csproj" />
   </ItemGroup>
 
 </Project>

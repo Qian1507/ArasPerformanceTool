@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace ArasPerformanceTool.Engine.Aras;
 
-public class ArasClient
+public class ArasClient : IArasClient
 {
     private readonly HttpClient _httpClient;
     private readonly string _oauthUrl;
