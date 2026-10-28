@@ -1,0 +1,6 @@
+@ArasPerformanceTool.Api_HostAddress = http://localhost:5128
+
+GET {{ArasPerformanceTool.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

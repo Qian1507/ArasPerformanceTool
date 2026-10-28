@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ArasPerformanceTool.Api/ArasPerformanceTool.Api.csproj" />
+    <Project Path="src/ArasPerformanceTool.Engine/ArasPerformanceTool.Engine.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ArasPerformanceTool.Tests/ArasPerformanceTool.Tests.csproj" />
+  </Folder>
+</Solution>
