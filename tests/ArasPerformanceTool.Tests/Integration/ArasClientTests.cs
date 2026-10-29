@@ -227,6 +227,7 @@ public class ArasClientTests
 
         Assert.False(string.IsNullOrWhiteSpace(exception.FaultCode));
         Assert.NotEqual("0", exception.FaultCode);
+        Assert.False(string.IsNullOrWhiteSpace(exception.FaultString));
     }
 
 
