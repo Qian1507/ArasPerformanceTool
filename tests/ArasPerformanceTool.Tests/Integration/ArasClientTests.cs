@@ -1,6 +1,7 @@
 
 using ArasPerformanceTool.Engine.Aras;
 using Xunit;
+using ArasPerformanceTool.Engine.Exceptions;
 
 namespace ArasPerformanceTool.Tests.Integration;
 
@@ -184,5 +185,49 @@ public class ArasClientTests
         var id = (string?)createdItem.Attribute("id");
         Assert.False(string.IsNullOrWhiteSpace(id));
     }
+
+    
+    [Fact]
+    public async Task ExecuteAmlAsync_ShouldThrowArasException_WhenItemTypeIsInvalid()
+    {
+        // Arrange
+        var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
+        var password = Environment.GetEnvironmentVariable("ARAS_PASSWORD");
+
+        Assert.False(string.IsNullOrWhiteSpace(username));
+        Assert.False(string.IsNullOrWhiteSpace(password));
+
+        using var httpClient = new HttpClient();
+
+        var arasClient = new ArasClient(
+            httpClient,
+            "http://localhost/InnovatorServer/OAuthServer/connect/token",
+            "InnovatorSolutions");
+
+        var token = await arasClient.GetAccessTokenAsync(
+            username!,
+            password!);
+
+        const string serverUrl =
+            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx";
+
+        const string invalidAml = """
+            <AML>
+                <Item type="LIA_NONEXISTENT_ITEMTYPE_999"
+                    action="get" />
+            </AML>
+            """;
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<ArasException>(
+            () => arasClient.ExecuteAmlAsync(
+                serverUrl,
+                token,
+                invalidAml));
+
+        Assert.False(string.IsNullOrWhiteSpace(exception.FaultCode));
+        Assert.NotEqual("0", exception.FaultCode);
+    }
+
 
 }
