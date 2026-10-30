@@ -46,6 +46,12 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// Serve the default page (index.html) when accessing the root URL
+app.UseDefaultFiles();
+
+// Enable serving static files (HTML, CSS, JavaScript) from wwwroot
+app.UseStaticFiles();
+
 app.UseHttpsRedirection();
 app.MapControllers();
 
