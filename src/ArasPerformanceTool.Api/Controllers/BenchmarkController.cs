@@ -5,6 +5,7 @@ using ArasPerformanceTool.Api.DTOs;
 using ArasPerformanceTool.Engine.Aras;
 using ArasPerformanceTool.Engine.Benchmarking;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
+using ArasPerformanceTool.Engine.Storage;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ArasPerformanceTool.Api.Controllers;
@@ -14,25 +15,28 @@ namespace ArasPerformanceTool.Api.Controllers;
 [Produces("application/json")]
 public class BenchmarkController : ControllerBase
 {
-    // Store completed and failed benchmark results in memory
+    // Store benchmark status responses in memory
     private static readonly ConcurrentDictionary<Guid, BenchmarkStatusResponse> Jobs = new();
 
-    
     private readonly IArasClient _arasClient;
+    private readonly CreateWorkload _createWorkload;
+    private readonly FileResultStore _fileResultStore;
     private readonly IConfiguration _configuration;
     private readonly ILogger<BenchmarkController> _logger;
 
     public BenchmarkController(
         IArasClient arasClient,
+        CreateWorkload createWorkload,
+        FileResultStore fileResultStore,
         IConfiguration configuration,
         ILogger<BenchmarkController> logger)
     {
         _arasClient = arasClient;
+        _createWorkload = createWorkload;
+        _fileResultStore = fileResultStore;
         _configuration = configuration;
         _logger = logger;
     }
-    
-    
 
     /// <summary>
     /// Runs a Create benchmark and returns its final result.
@@ -44,10 +48,7 @@ public class BenchmarkController : ControllerBase
     public async Task<IActionResult> StartBenchmark(
         [FromBody] StartBenchmarkRequest request)
     {
-        // [ApiController] automatically validates DataAnnotations
-        // before this action executes.
-
-        // The current API supports Create for these verified ItemTypes
+        // Currently only Part and Document Create operations are supported
         if (request.ItemType is not ("Part" or "Document"))
         {
             return BadRequest(new
@@ -69,7 +70,7 @@ public class BenchmarkController : ControllerBase
 
         try
         {
-            // Use the existing Aras configuration structure
+            // Read the existing Aras configuration
             var serverUrl = _configuration["Aras:ServerUrl"]
                 ?? throw new InvalidOperationException(
                     "Aras Server URL is missing.");
@@ -84,36 +85,30 @@ public class BenchmarkController : ControllerBase
                     "Aras credentials are not configured.");
             }
 
-        
-
-            
+            // Authenticate with Aras
             var token = await _arasClient.GetAccessTokenAsync(
                 username,
                 password);
 
-            // Create the benchmark runner
+            // Prepare benchmark execution
             var runner = new BenchmarkRunner();
-
-            // Reuse the injected Aras client
             var dataManager = new TestDataManager(_arasClient);
-            var createWorkload = new CreateWorkload(_arasClient);
 
-            // Configure benchmark execution
             var config = new BenchmarkConfiguration(
                 request.ItemType,
                 request.Iterations,
                 request.Concurrency);
 
+            BenchmarkReport? report = null;
 
             try
             {
-                // Execute the benchmark and wait for its result
-                var report = await runner.RunAsync(
+                // Run AML Create operations
+                report = await runner.RunAsync(
                     workloadName,
                     config,
                     async index =>
                     {
-                        // Generate a unique Item Number
                         var itemNumber =
                             $"API-BENCH-{Guid.NewGuid():N}"[..24];
 
@@ -123,14 +118,12 @@ public class BenchmarkController : ControllerBase
                             ["name"] = $"API Benchmark {request.ItemType} {index + 1}"
                         };
 
-                        // Execute a real AML Create request
-                        var responseXml = await createWorkload.ExecuteAsync(
+                        var responseXml = await _createWorkload.ExecuteAsync(
                             serverUrl,
                             token,
                             request.ItemType,
                             properties);
 
-                        // Extract the newly created Item ID
                         var id = ExtractItemId(
                             responseXml,
                             request.ItemType);
@@ -141,13 +134,13 @@ public class BenchmarkController : ControllerBase
                                 $"Unable to extract created Item ID at iteration {index}.");
                         }
 
-                        // Track created test data for cleanup
+                        // Track test data for cleanup
                         dataManager.Manifest.Track(request.ItemType, id);
                     });
 
                 statistics = report.Statistics;
 
-                // A benchmark with failed operations is not fully successful
+                // Preserve the failure state if any operations failed
                 if (statistics.FailureCount > 0)
                 {
                     status = BenchmarkStatus.Failed;
@@ -157,13 +150,12 @@ public class BenchmarkController : ControllerBase
             }
             finally
             {
-                // Always attempt to clean up tracked test records
+                // Always attempt cleanup after benchmark execution
                 var cleanupResult = await dataManager.CleanupAsync(
                     serverUrl,
                     token,
                     request.ItemType);
 
-                // Do not silently ignore cleanup failures
                 if (cleanupResult.FailedIds.Count > 0 ||
                     dataManager.Manifest.TotalCount > 0)
                 {
@@ -171,20 +163,28 @@ public class BenchmarkController : ControllerBase
                         "Benchmark cleanup did not complete successfully.");
                 }
             }
+
+            // Persist the complete benchmark report after successful cleanup
+            // Also preserve measurements from partially failed benchmarks
+            if (report is not null)
+            {
+                await _fileResultStore.SaveAsync(jobId, report);
+            }
         }
         catch (Exception ex)
         {
-            // Log technical details only on the server
+            // Keep technical error details in server logs
             _logger.LogError(
                 ex,
                 "Benchmark failed: JobId={JobId}",
                 jobId);
 
             status = BenchmarkStatus.Failed;
-            errorMessage = "Benchmark execution or cleanup failed. Check server logs.";
+            errorMessage =
+                "Benchmark execution or cleanup failed. Check server logs.";
         }
 
-        // Build the final response after execution and cleanup
+        // Return the final benchmark status
         var response = new BenchmarkStatusResponse(
             JobId: jobId,
             Status: status,
@@ -196,7 +196,6 @@ public class BenchmarkController : ControllerBase
             Statistics: statistics,
             ErrorMessage: errorMessage);
 
-        // Save the result for future GET requests
         Jobs[jobId] = response;
 
         _logger.LogInformation(
@@ -247,7 +246,9 @@ public class BenchmarkController : ControllerBase
         return Ok(results);
     }
 
-    // Extract the created Item ID from the Aras AML response
+    /// <summary>
+    /// Extracts the created Item ID from an AML response.
+    /// </summary>
     private static string? ExtractItemId(
         string xmlPayload,
         string itemType)

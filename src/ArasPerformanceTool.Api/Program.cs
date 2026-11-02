@@ -1,5 +1,6 @@
 
 using ArasPerformanceTool.Engine.Aras;
+using ArasPerformanceTool.Engine.Storage;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -9,6 +10,9 @@ builder.Services.AddControllers();
 
 // Register HttpClient
 builder.Services.AddHttpClient("Aras");
+
+// Register FileResultStore as Singleton
+builder.Services.AddSingleton<FileResultStore>();
 
 // Register ArasClient with required configuration
 builder.Services.AddTransient<IArasClient>(sp =>
