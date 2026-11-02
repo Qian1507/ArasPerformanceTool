@@ -2,33 +2,29 @@ using System.ComponentModel.DataAnnotations;
 
 namespace ArasPerformanceTool.Api.DTOs;
 
-/// <summary>
-/// Request contract for initiating a benchmark execution.
-/// </summary>
-public sealed class StartBenchmarkRequest
+public class StartBenchmarkRequest
 {
     /// <summary>
-    /// Target Aras ItemType to benchmark (e.g., "Part", "Document").
+    /// Raw AML XML payload to benchmark.
     /// </summary>
-    [Required]
-    [StringLength(100, MinimumLength = 1)]
-    public string ItemType { get; init; } = "Part";
+    [StringLength(100000)]
+    public string? Aml { get; set; }
 
     /// <summary>
-    /// Number of operations to execute.
+    /// Target ItemType (e.g., Part, Document). Can be parsed from AML if omitted.
     /// </summary>
-    [Range(1, 10000)]
-    public int Iterations { get; init; } = 5;
+    public string? ItemType { get; set; }
 
     /// <summary>
-    /// Degree of concurrency for workload execution.
+    /// Target CRUD action (e.g., add, get, edit, delete).
     /// </summary>
-    [Range(1, 64)]
-    public int Concurrency { get; init; } = 1;
+    public string? Action { get; set; }
 
-    /// <summary>
-    /// Optional display name for this benchmark run.
-    /// The M5 API currently executes CreateWorkload only.
-    /// </summary>
-    public string? WorkloadName { get; init; }
+    [Range(1, 1000)]
+    public int Iterations { get; set; } = 10;
+
+    [Range(1, 50)]
+    public int Concurrency { get; set; } = 1;
+
+    public string? WorkloadName { get; set; }
 }

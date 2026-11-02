@@ -1,5 +1,6 @@
 
 using System.Collections.Concurrent;
+using System.Xml;
 using System.Xml.Linq;
 using ArasPerformanceTool.Api.DTOs;
 using ArasPerformanceTool.Engine.Aras;
@@ -15,62 +16,170 @@ namespace ArasPerformanceTool.Api.Controllers;
 [Produces("application/json")]
 public class BenchmarkController : ControllerBase
 {
-    // Store benchmark status responses in memory
-    private static readonly ConcurrentDictionary<Guid, BenchmarkStatusResponse> Jobs = new();
+    private static readonly ConcurrentDictionary<Guid, BenchmarkStatusResponse>
+        Jobs = new();
 
     private readonly IArasClient _arasClient;
-    private readonly CreateWorkload _createWorkload;
     private readonly FileResultStore _fileResultStore;
     private readonly IConfiguration _configuration;
     private readonly ILogger<BenchmarkController> _logger;
 
     public BenchmarkController(
         IArasClient arasClient,
-        CreateWorkload createWorkload,
         FileResultStore fileResultStore,
         IConfiguration configuration,
         ILogger<BenchmarkController> logger)
     {
         _arasClient = arasClient;
-        _createWorkload = createWorkload;
         _fileResultStore = fileResultStore;
         _configuration = configuration;
         _logger = logger;
     }
 
     /// <summary>
-    /// Runs a Create benchmark and returns its final result.
+    /// Runs a standard CRUD or custom read-only AML benchmark.
     /// </summary>
     [HttpPost]
-    [ProducesResponseType(typeof(BenchmarkStatusResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(BenchmarkStatusResponse),
+        StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(BenchmarkStatusResponse), StatusCodes.Status500InternalServerError)]
+    [ProducesResponseType(
+        typeof(BenchmarkStatusResponse),
+        StatusCodes.Status500InternalServerError)]
     public async Task<IActionResult> StartBenchmark(
         [FromBody] StartBenchmarkRequest request)
     {
-        // Currently only Part and Document Create operations are supported
-        if (request.ItemType is not ("Part" or "Document"))
+        var isRawAml = !string.IsNullOrWhiteSpace(request.Aml);
+
+        string itemType;
+        string action;
+        string? executableAml = null;
+
+        // =====================================================
+        // 1. Validate Request
+        // =====================================================
+
+        try
+        {
+            if (isRawAml)
+            {
+                var rawAml = request.Aml!;
+
+                // Custom AML supports read-only operations only.
+                AmlParser.ValidateReadOnlyAml(rawAml);
+
+                // Do not modify queries between iterations.
+                if (rawAml.Contains("${UNIQUE}") ||
+                    rawAml.Contains("${INDEX}"))
+                {
+                    return BadRequest(new
+                    {
+                        Message =
+                            "Dynamic placeholders are not supported in read-only AML benchmarks."
+                    });
+                }
+
+                var metadata = AmlParser.ParseMetadata(rawAml);
+
+                itemType = metadata.ItemType;
+                action = metadata.Action;
+
+                if (!string.IsNullOrWhiteSpace(request.ItemType) &&
+                    !string.Equals(
+                        request.ItemType,
+                        itemType,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return BadRequest(new
+                    {
+                        Message = "ItemType does not match the AML payload."
+                    });
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.Action) &&
+                    !string.Equals(
+                        request.Action,
+                        action,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return BadRequest(new
+                    {
+                        Message = "Action does not match the AML payload."
+                    });
+                }
+
+                executableAml = AmlParser.PrepareExecutableAml(
+                    rawAml,
+                    0);
+            }
+            else
+            {
+                itemType = request.ItemType ?? "Part";
+                action = request.Action ?? "Create";
+
+                if (itemType is not ("Part" or "Document"))
+                {
+                    return BadRequest(new
+                    {
+                        Message =
+                            "Standard mode currently supports Part and Document only."
+                    });
+                }
+
+                var supportedActions = new[]
+                {
+                    "Create",
+                    "Read",
+                    "Update",
+                    "Delete"
+                };
+
+                if (!supportedActions.Contains(
+                    action,
+                    StringComparer.OrdinalIgnoreCase))
+                {
+                    return BadRequest(new
+                    {
+                        Message = "Unsupported CRUD operation."
+                    });
+                }
+            }
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or XmlException)
         {
             return BadRequest(new
             {
-                Message = "M5 currently supports Part and Document only."
+                Message = ex.Message
             });
         }
+
+        // =====================================================
+        // 2. Initialize Benchmark
+        // =====================================================
 
         var jobId = Guid.NewGuid();
         var createdAtUtc = DateTime.UtcNow;
 
-        var workloadName = string.IsNullOrWhiteSpace(request.WorkloadName)
-            ? $"Create{request.ItemType}Benchmark"
+        var workloadName = string.IsNullOrWhiteSpace(
+            request.WorkloadName)
+            ? $"{(isRawAml ? "RawAml" : "Standard")}_{action}_{itemType}"
             : request.WorkloadName;
 
+        BenchmarkReport? report = null;
         BenchmarkStatistics? statistics = null;
+        CrudVerification? verification = null;
+
         var status = BenchmarkStatus.Completed;
         string? errorMessage = null;
 
         try
         {
-            // Read the existing Aras configuration
+            // =================================================
+            // 3. Connect to Aras
+            // =================================================
+
             var serverUrl = _configuration["Aras:ServerUrl"]
                 ?? throw new InvalidOperationException(
                     "Aras Server URL is missing.");
@@ -85,116 +194,603 @@ public class BenchmarkController : ControllerBase
                     "Aras credentials are not configured.");
             }
 
-            // Authenticate with Aras
             var token = await _arasClient.GetAccessTokenAsync(
                 username,
                 password);
 
-            // Prepare benchmark execution
             var runner = new BenchmarkRunner();
-            var dataManager = new TestDataManager(_arasClient);
 
             var config = new BenchmarkConfiguration(
-                request.ItemType,
+                itemType,
                 request.Iterations,
                 request.Concurrency);
 
-            BenchmarkReport? report = null;
+            // =================================================
+            // 4. Custom AML Benchmark
+            // =================================================
 
-            try
+            if (isRawAml)
             {
-                // Run AML Create operations
+                // Run exactly the same read-only AML each time.
                 report = await runner.RunAsync(
                     workloadName,
                     config,
-                    async index =>
+                    async _ =>
                     {
-                        var itemNumber =
-                            $"API-BENCH-{Guid.NewGuid():N}"[..24];
-
-                        var properties = new Dictionary<string, string>
-                        {
-                            ["item_number"] = itemNumber,
-                            ["name"] = $"API Benchmark {request.ItemType} {index + 1}"
-                        };
-
-                        var responseXml = await _createWorkload.ExecuteAsync(
+                        await _arasClient.ExecuteAmlAsync(
                             serverUrl,
                             token,
-                            request.ItemType,
-                            properties);
+                            executableAml!);
+                    });
+            }
+            else
+            {
+                // =============================================
+                // 5. Standard CRUD Benchmark
+                // =============================================
 
-                        var id = ExtractItemId(
-                            responseXml,
-                            request.ItemType);
+                var dataManager = new TestDataManager(_arasClient);
 
-                        if (string.IsNullOrWhiteSpace(id))
+                var createWorkload =
+                    new CreateWorkload(_arasClient);
+
+                var readWorkload =
+                    new ReadWorkload(_arasClient);
+
+                var updateWorkload =
+                    new UpdateWorkload(_arasClient);
+
+                var deleteWorkload =
+                    new DeleteWorkload(_arasClient);
+
+                try
+                {
+                    // =========================================
+                    // CREATE
+                    // =========================================
+
+                    if (string.Equals(
+                        action,
+                        "Create",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        var createdIds =
+                            new string?[request.Iterations];
+
+                        var createdNames =
+                            new string?[request.Iterations];
+
+                        report = await runner.RunAsync(
+                            workloadName,
+                            config,
+                            async index =>
+                            {
+                                var itemNumber =
+                                    $"API-BENCH-{Guid.NewGuid():N}"[..24];
+
+                                var name =
+                                    $"API Benchmark {itemType} {index + 1}";
+
+                                var properties =
+                                    new Dictionary<string, string>
+                                    {
+                                        ["item_number"] = itemNumber,
+                                        ["name"] = name
+                                    };
+
+                                var responseXml =
+                                    await createWorkload.ExecuteAsync(
+                                        serverUrl,
+                                        token,
+                                        itemType,
+                                        properties);
+
+                                var id = ExtractItemId(
+                                    responseXml,
+                                    itemType);
+
+                                if (string.IsNullOrWhiteSpace(id))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Unable to extract created Item ID at iteration {index}.");
+                                }
+
+                                // Track immediately after getting the ID.
+                                dataManager.Manifest.Track(
+                                    itemType,
+                                    id);
+
+                                createdIds[index] = id;
+                                createdNames[index] = name;
+                            });
+
+                        // Verify one created sample outside timing.
+                        var sampleId = createdIds[0];
+
+                        var sampleVerified = false;
+                        string? retrievedName = null;
+
+                        if (!string.IsNullOrWhiteSpace(sampleId))
                         {
-                            throw new InvalidOperationException(
-                                $"Unable to extract created Item ID at iteration {index}.");
+                            var readXml =
+                                await readWorkload.ExecuteAsync(
+                                    serverUrl,
+                                    token,
+                                    itemType,
+                                    id: sampleId,
+                                    select: "id,item_number,name");
+
+                            var document = XDocument.Parse(readXml);
+
+                            var item = FindItem(
+                                document,
+                                itemType,
+                                sampleId);
+
+                            if (item is not null)
+                            {
+                                retrievedName = GetProperty(
+                                    item,
+                                    "name");
+
+                                sampleVerified = string.Equals(
+                                    retrievedName,
+                                    createdNames[0],
+                                    StringComparison.Ordinal);
+                            }
                         }
 
-                        // Track test data for cleanup
-                        dataManager.Manifest.Track(request.ItemType, id);
-                    });
+                        verification = new CrudVerification(
+                            Operation: "Create",
+                            TargetId: sampleId,
+                            PropertyName: "name",
+                            AfterValue: retrievedName,
+                            IsVerified: sampleVerified,
+                            VerificationNote: sampleVerified
+                                ? "Sample item was created and verified by a separate Read."
+                                : "The created sample could not be verified.",
+                            CleanedUp: null);
+                    }
 
-                statistics = report.Statistics;
+                    // =========================================
+                    // READ
+                    // =========================================
 
-                // Preserve the failure state if any operations failed
-                if (statistics.FailureCount > 0)
+                    else if (string.Equals(
+                        action,
+                        "Read",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Create one temporary item before timing.
+                        var preparedIds =
+                            await dataManager.PrepareAsync(
+                                serverUrl,
+                                token,
+                                itemType,
+                                1);
+
+                        var readId = preparedIds[0];
+
+                        // Each iteration keeps its own response.
+                        var responses =
+                            new string?[request.Iterations];
+
+                        report = await runner.RunAsync(
+                            workloadName,
+                            config,
+                            async index =>
+                            {
+                                responses[index] =
+                                    await readWorkload.ExecuteAsync(
+                                        serverUrl,
+                                        token,
+                                        itemType,
+                                        id: readId,
+                                        select: "id,item_number,name");
+                            });
+
+                        // Parse a representative response outside timing.
+                        string? retrievedName = null;
+                        string? retrievedItemNumber = null;
+                        var sampleVerified = false;
+
+                        var sampleXml = responses[0];
+
+                        if (!string.IsNullOrWhiteSpace(sampleXml))
+                        {
+                            var document = XDocument.Parse(sampleXml);
+
+                            var item = FindItem(
+                                document,
+                                itemType,
+                                readId);
+
+                            if (item is not null)
+                            {
+                                retrievedName = GetProperty(
+                                    item,
+                                    "name");
+
+                                retrievedItemNumber = GetProperty(
+                                    item,
+                                    "item_number");
+
+                                sampleVerified =
+                                    !string.IsNullOrWhiteSpace(
+                                        retrievedName) &&
+                                    !string.IsNullOrWhiteSpace(
+                                        retrievedItemNumber);
+                            }
+                        }
+
+                        verification = new CrudVerification(
+                            Operation: "Read",
+                            TargetId: readId,
+                            PropertyName: "name",
+                            AfterValue: retrievedName,
+                            IsVerified: sampleVerified,
+                            VerificationNote: sampleVerified
+                                ? $"Sample Item Number: {retrievedItemNumber}. " +
+                                  "The returned Item ID matches the requested ID."
+                                : "The sample Read result could not be verified.",
+                            CleanedUp: null);
+                    }
+
+                    // =========================================
+                    // UPDATE
+                    // =========================================
+
+                    else if (string.Equals(
+                        action,
+                        "Update",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Prepare an independent item per iteration.
+                        var preparedIds =
+                            await dataManager.PrepareAsync(
+                                serverUrl,
+                                token,
+                                itemType,
+                                request.Iterations);
+
+                        var sampleOriginalId = preparedIds[0];
+
+                        // Capture the original sample before timing.
+                        var beforeXml =
+                            await readWorkload.ExecuteAsync(
+                                serverUrl,
+                                token,
+                                itemType,
+                                id: sampleOriginalId,
+                                select: "id,name,generation");
+
+                        var beforeDocument =
+                            XDocument.Parse(beforeXml);
+
+                        var beforeItem = FindItem(
+                            beforeDocument,
+                            itemType,
+                            sampleOriginalId);
+
+                        if (beforeItem is null)
+                        {
+                            throw new InvalidOperationException(
+                                "Unable to retrieve the original Update sample.");
+                        }
+
+                        var beforeName = GetProperty(
+                            beforeItem,
+                            "name");
+
+                        var beforeGeneration = GetProperty(
+                            beforeItem,
+                            "generation");
+
+                        if (beforeName is null)
+                        {
+                            throw new InvalidOperationException(
+                                "Original sample is missing the name property.");
+                        }
+
+                        // Keep each iteration result in its own slot.
+                        var returnedIds =
+                            new string?[request.Iterations];
+
+                        report = await runner.RunAsync(
+                            workloadName,
+                            config,
+                            async index =>
+                            {
+                                var targetId = preparedIds[index];
+
+                                var properties =
+                                    new Dictionary<string, string>
+                                    {
+                                        ["name"] =
+                                            $"Updated Benchmark {index + 1}"
+                                    };
+
+                                var responseXml =
+                                    await updateWorkload.ExecuteAsync(
+                                        serverUrl,
+                                        token,
+                                        itemType,
+                                        targetId,
+                                        properties);
+
+                                var returnedId = ExtractItemId(
+                                    responseXml,
+                                    itemType);
+
+                                if (string.IsNullOrWhiteSpace(returnedId))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Update did not return an Item ID at iteration {index}.");
+                                }
+
+                                returnedIds[index] = returnedId;
+
+                                // Track any new generation ID.
+                                if (!string.Equals(
+                                    targetId,
+                                    returnedId,
+                                    StringComparison.OrdinalIgnoreCase))
+                                {
+                                    dataManager.Manifest.Track(
+                                        itemType,
+                                        returnedId);
+                                }
+                            });
+
+                        // Verify the first updated sample outside timing.
+                        var sampleUpdatedId = returnedIds[0];
+
+                        string? afterName = null;
+                        string? afterGeneration = null;
+                        var sampleVerified = false;
+
+                        if (!string.IsNullOrWhiteSpace(sampleUpdatedId))
+                        {
+                            var afterXml =
+                                await readWorkload.ExecuteAsync(
+                                    serverUrl,
+                                    token,
+                                    itemType,
+                                    id: sampleUpdatedId,
+                                    select: "id,name,generation");
+
+                            var afterDocument =
+                                XDocument.Parse(afterXml);
+
+                            var afterItem = FindItem(
+                                afterDocument,
+                                itemType,
+                                sampleUpdatedId);
+
+                            if (afterItem is not null)
+                            {
+                                afterName = GetProperty(
+                                    afterItem,
+                                    "name");
+
+                                afterGeneration = GetProperty(
+                                    afterItem,
+                                    "generation");
+
+                                sampleVerified = string.Equals(
+                                    afterName,
+                                    "Updated Benchmark 1",
+                                    StringComparison.Ordinal);
+                            }
+                        }
+
+                        var idChanged =
+                            !string.IsNullOrWhiteSpace(sampleUpdatedId) &&
+                            !string.Equals(
+                                sampleOriginalId,
+                                sampleUpdatedId,
+                                StringComparison.OrdinalIgnoreCase);
+
+                        verification = new CrudVerification(
+                            Operation: "Update",
+                            TargetId: sampleOriginalId,
+                            UpdatedId: sampleUpdatedId,
+                            PropertyName: "name",
+                            BeforeGeneration: beforeGeneration,
+                            AfterGeneration: afterGeneration,
+                            BeforeValue: beforeName,
+                            AfterValue: afterName,
+                            IsVerified: sampleVerified,
+                            VerificationNote: sampleVerified
+                                ? idChanged
+                                    ? "Sample update verified. Aras returned a new Item ID."
+                                    : "Sample update verified. Item ID remained unchanged."
+                                : "The updated sample could not be verified.",
+                            CleanedUp: null);
+                    }
+
+                    // =========================================
+                    // DELETE
+                    // =========================================
+
+                    else if (string.Equals(
+                        action,
+                        "Delete",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Prepare independent items before timing.
+                        var preparedIds =
+                            await dataManager.PrepareAsync(
+                                serverUrl,
+                                token,
+                                itemType,
+                                request.Iterations);
+
+                        report = await runner.RunAsync(
+                            workloadName,
+                            config,
+                            async index =>
+                            {
+                                var targetId = preparedIds[index];
+
+                                var responseXml =
+                                    await deleteWorkload.ExecuteAsync(
+                                        serverUrl,
+                                        token,
+                                        itemType,
+                                        targetId);
+
+                                var document = XDocument.Parse(responseXml);
+
+                                // A SOAP fault is not considered a
+                                // successful deletion.
+                                var faultCode = GetFaultCode(document);
+
+                                if (faultCode is not null)
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Delete failed for Item {targetId}. " +
+                                        $"Aras fault code: {faultCode}");
+                                }
+                            });
+
+                        // Verify every deleted target outside timing.
+                        var verifiedCount = 0;
+
+                        foreach (var targetId in preparedIds)
+                        {
+                            var readXml =
+                                await readWorkload.ExecuteAsync(
+                                    serverUrl,
+                                    token,
+                                    itemType,
+                                    id: targetId,
+                                    select: "id");
+
+                            var document = XDocument.Parse(readXml);
+
+                            if (IsItemAbsent(
+                                document,
+                                itemType,
+                                targetId))
+                            {
+                                verifiedCount++;
+                            }
+                        }
+
+                        var allAbsent =
+                            verifiedCount == preparedIds.Count;
+
+                        var allVerified =
+                            allAbsent &&
+                            report.Statistics.FailureCount == 0;
+
+                        verification = new CrudVerification(
+                            Operation: "Delete",
+                            TargetId: preparedIds[0],
+                            IsVerified: allVerified,
+                            VerifiedNotFound: allAbsent,
+                            VerificationNote:
+                                $"{verifiedCount}/{preparedIds.Count} test items " +
+                                "were confirmed absent from standard ID queries. " +
+                                "Historical versions may still exist.",
+                            CleanedUp: null);
+                    }
+                }
+                finally
                 {
-                    status = BenchmarkStatus.Failed;
-                    errorMessage =
-                        $"{statistics.FailureCount} benchmark operations failed.";
+                    // =========================================
+                    // 6. Cleanup
+                    // =========================================
+
+                    // Cleanup is excluded from benchmark timing.
+                    // Failed and already-deleted records remain
+                    // subject to the manager's verification rules.
+                    var cleanupResult =
+                        await dataManager.CleanupAsync(
+                            serverUrl,
+                            token,
+                            itemType);
+
+                    var cleanupSucceeded =
+                        cleanupResult.FailedIds.Count == 0 &&
+                        dataManager.Manifest.TotalCount == 0;
+
+                    if (verification is not null)
+                    {
+                        verification = verification with
+                        {
+                            CleanedUp = cleanupSucceeded
+                        };
+                    }
+
+                    if (!cleanupSucceeded)
+                    {
+                        throw new InvalidOperationException(
+                            "Benchmark cleanup did not complete successfully.");
+                    }
                 }
             }
-            finally
-            {
-                // Always attempt cleanup after benchmark execution
-                var cleanupResult = await dataManager.CleanupAsync(
-                    serverUrl,
-                    token,
-                    request.ItemType);
 
-                if (cleanupResult.FailedIds.Count > 0 ||
-                    dataManager.Manifest.TotalCount > 0)
-                {
-                    throw new InvalidOperationException(
-                        "Benchmark cleanup did not complete successfully.");
-                }
+            // =================================================
+            // 7. Evaluate and Save Benchmark Report
+            // =================================================
+
+            if (report is null)
+            {
+                throw new InvalidOperationException(
+                    "Benchmark report was not generated.");
             }
 
-            // Persist the complete benchmark report after successful cleanup
-            // Also preserve measurements from partially failed benchmarks
-            if (report is not null)
+            statistics = report.Statistics;
+
+            if (statistics.FailureCount > 0)
             {
-                await _fileResultStore.SaveAsync(jobId, report);
+                status = BenchmarkStatus.Failed;
+                errorMessage =
+                    $"{statistics.FailureCount} benchmark operations failed.";
             }
+
+            if (verification?.IsVerified == false)
+            {
+                status = BenchmarkStatus.Failed;
+                errorMessage =
+                    "CRUD verification failed. Check Operation Verification Summary.";
+            }
+
+            // Preserve the existing CSV/JSON report format.
+            await _fileResultStore.SaveAsync(
+                jobId,
+                report);
         }
         catch (Exception ex)
         {
-            // Keep technical error details in server logs
             _logger.LogError(
                 ex,
                 "Benchmark failed: JobId={JobId}",
                 jobId);
 
             status = BenchmarkStatus.Failed;
+
             errorMessage =
                 "Benchmark execution or cleanup failed. Check server logs.";
         }
 
-        // Return the final benchmark status
+        // =====================================================
+        // 8. Build API Response
+        // =====================================================
+
         var response = new BenchmarkStatusResponse(
             JobId: jobId,
             Status: status,
-            ItemType: request.ItemType,
+            ItemType: itemType,
             Iterations: request.Iterations,
             Concurrency: request.Concurrency,
             CreatedAtUtc: createdAtUtc,
             CompletedAtUtc: DateTime.UtcNow,
             Statistics: statistics,
-            ErrorMessage: errorMessage);
+            ErrorMessage: errorMessage,
+            Verification: verification);
 
         Jobs[jobId] = response;
 
@@ -214,10 +810,12 @@ public class BenchmarkController : ControllerBase
     }
 
     /// <summary>
-    /// Retrieves a benchmark result by its Job ID.
+    /// Retrieves a benchmark result by Job ID.
     /// </summary>
     [HttpGet("{id:guid}")]
-    [ProducesResponseType(typeof(BenchmarkStatusResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(BenchmarkStatusResponse),
+        StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public IActionResult GetBenchmarkStatus(Guid id)
     {
@@ -236,7 +834,9 @@ public class BenchmarkController : ControllerBase
     /// Retrieves all benchmark results stored in memory.
     /// </summary>
     [HttpGet]
-    [ProducesResponseType(typeof(IEnumerable<BenchmarkStatusResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(IEnumerable<BenchmarkStatusResponse>),
+        StatusCodes.Status200OK)]
     public IActionResult GetAllBenchmarks()
     {
         var results = Jobs.Values
@@ -246,23 +846,125 @@ public class BenchmarkController : ControllerBase
         return Ok(results);
     }
 
+    // =========================================================
+    // 9. XML Helpers
+    // =========================================================
+
     /// <summary>
-    /// Extracts the created Item ID from an AML response.
+    /// Finds an Item in an AML or SOAP response.
+    /// </summary>
+    private static XElement? FindItem(
+        XDocument document,
+        string itemType,
+        string? itemId = null)
+    {
+        if (document.Root is null)
+        {
+            return null;
+        }
+
+        return document.Root.DescendantsAndSelf()
+            .FirstOrDefault(element =>
+                element.Name.LocalName == "Item" &&
+                string.Equals(
+                    (string?)element.Attribute("type"),
+                    itemType,
+                    StringComparison.OrdinalIgnoreCase) &&
+                (itemId is null ||
+                 string.Equals(
+                     GetItemId(element),
+                     itemId,
+                     StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>
+    /// Gets a property from an Aras Item element.
+    /// </summary>
+    private static string? GetProperty(
+        XElement item,
+        string propertyName)
+    {
+        return item.Elements()
+            .FirstOrDefault(element =>
+                string.Equals(
+                    element.Name.LocalName,
+                    propertyName,
+                    StringComparison.OrdinalIgnoreCase))
+            ?.Value;
+    }
+
+    /// <summary>
+    /// Gets an Item ID from its attribute or child element.
+    /// </summary>
+    private static string? GetItemId(XElement item)
+    {
+        return (string?)item.Attribute("id")
+            ?? GetProperty(item, "id");
+    }
+
+    /// <summary>
+    /// Extracts the returned Item ID from an AML response.
     /// </summary>
     private static string? ExtractItemId(
         string xmlPayload,
         string itemType)
     {
-        var xml = XDocument.Parse(xmlPayload);
+        var document = XDocument.Parse(xmlPayload);
 
-        var itemElement = xml.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "Item" &&
-                string.Equals(
-                    (string?)e.Attribute("type"),
-                    itemType,
-                    StringComparison.OrdinalIgnoreCase));
+        var item = FindItem(
+            document,
+            itemType);
 
-        return (string?)itemElement?.Attribute("id");
+        return item is null
+            ? null
+            : GetItemId(item);
+    }
+
+    /// <summary>
+    /// Gets the SOAP fault code if one is present.
+    /// </summary>
+    private static string? GetFaultCode(XDocument document)
+    {
+        var fault = document.Descendants()
+            .FirstOrDefault(element =>
+                element.Name.LocalName == "Fault");
+
+        if (fault is null)
+        {
+            return null;
+        }
+
+        return fault.Descendants()
+            .FirstOrDefault(element =>
+                element.Name.LocalName == "faultcode")
+            ?.Value ?? string.Empty;
+    }
+
+    /// <summary>
+    /// Checks whether an Item is absent from a standard Read.
+    /// </summary>
+    private static bool IsItemAbsent(
+        XDocument document,
+        string itemType,
+        string itemId)
+    {
+        var faultCode = GetFaultCode(document);
+
+        if (faultCode is not null)
+        {
+            if (faultCode == "0")
+            {
+                return true;
+            }
+
+            throw new InvalidOperationException(
+                $"Unable to verify Item {itemId}. " +
+                $"Aras fault code: {faultCode}");
+        }
+
+        return FindItem(
+            document,
+            itemType,
+            itemId) is null;
     }
 }

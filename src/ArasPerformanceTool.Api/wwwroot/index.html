@@ -1,5 +1,149 @@
 <!DOCTYPE html>
-<html>
-<head><title>Aras Performance Tool</title></head>
-<body><h1>Aras Performance Tool</h1></body>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aras Innovator Benchmark Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+
+    <link rel="icon" href="data:,">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Aras Performance Benchmark Tool</h1>
+            <p class="subtitle">Execute AML operations, capture latency percentiles, and analyze throughput.</p>
+        </header>
+
+        <main class="main-content">
+            <!-- Configuration Section -->
+            <section class="card config-card">
+                <h2>Benchmark Configuration</h2>
+                <form id="benchmark-form">
+                    <!-- Mode Selector -->
+                    <div class="form-group">
+                        <label for="benchmarkMode">Execution Mode</label>
+                        <select id="benchmarkMode" name="benchmarkMode">
+                            <option value="Standard" selected>Standard CRUD Workload</option>
+                            <option value="RawAml">Custom AML Payload</option>
+                        </select>
+                    </div>
+
+                    <!-- 1. Standard CRUD Configuration -->
+                    <div id="standard-config-group">
+                        <div class="form-group">
+                            <label for="itemType">ItemType</label>
+                            <select id="itemType" name="itemType">
+                                <option value="Part">Part</option>
+                                <option value="Document">Document</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="operation">Operation</label>
+                            <select id="operation" name="operation">
+                                <option value="Create" selected>Create</option>
+                                <option value="Read">Read</option>
+                                <option value="Update">Update</option>
+                                <option value="Delete">Delete</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- 2. Custom AML Configuration (Default Hidden) -->
+                    <div id="custom-aml-group" class="form-group hidden">
+                        <div class="label-row">
+                            <label for="amlPayload">Custom AML Payload (XML)</label>
+                            <span id="aml-parse-status" class="parse-status">Waiting for input...</span>
+                        </div>
+                        <textarea id="amlPayload" name="amlPayload" rows="7" placeholder="<Item type=&quot;Part&quot; action=&quot;get&quot; select=&quot;item_number,name&quot; />"></textarea>
+                    </div>
+
+                    <!-- Common Benchmark Parameters -->
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="iterations">Iterations</label>
+                            <input type="number" id="iterations" name="iterations" min="1" max="1000" value="10" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="concurrency">Concurrency</label>
+                            <input type="number" id="concurrency" name="concurrency" min="1" max="20" value="1" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="workloadName">Workload Name (Optional)</label>
+                        <input type="text" id="workloadName" name="workloadName" placeholder="e.g. PerformanceBenchmarkRun">
+                    </div>
+
+                    <button type="submit" id="run-btn" class="btn btn-primary">
+                        <span id="btn-text">Execute Benchmark</span>
+                        <span id="btn-spinner" class="spinner hidden"></span>
+                    </button>
+                </form>
+            </section>
+
+            <!-- Results & Metrics Section -->
+            <section id="results-section" class="card results-card hidden">
+                <div class="results-header">
+                    <h2>Execution Metrics</h2>
+                    <span id="status-badge" class="badge">Completed</span>
+                </div>
+
+                <div id="error-banner" class="alert alert-danger hidden"></div>
+
+                <!-- CRUD Operation Verification Summary -->
+                <div id="verification-panel" class="verification-panel hidden">
+                    <h3>Operation Verification Summary</h3>
+                    <div id="verification-content" class="verification-content">
+                        <!-- Verification details are dynamically rendered by app.js -->
+                    </div>
+                </div>
+
+                <div class="metrics-grid">
+                    <div class="metric-box">
+                        <span class="metric-label">Throughput</span>
+                        <span id="metric-throughput" class="metric-value">-</span>
+                        <span class="metric-unit">req / sec</span>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Average Latency</span>
+                        <span id="metric-avg" class="metric-value">-</span>
+                        <span class="metric-unit">ms</span>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">P95 Latency</span>
+                        <span id="metric-p95" class="metric-value">-</span>
+                        <span class="metric-unit">ms</span>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">P99 Latency</span>
+                        <span id="metric-p99" class="metric-value">-</span>
+                        <span class="metric-unit">ms</span>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Min / Max</span>
+                        <span id="metric-minmax" class="metric-value">-</span>
+                        <span class="metric-unit">ms</span>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Success Rate</span>
+                        <span id="metric-success-rate" class="metric-value">-</span>
+                        <span class="metric-unit">success / total</span>
+                    </div>
+                </div>
+
+                <div class="export-actions">
+                    <h3>Export Performance Reports</h3>
+                    <div class="action-buttons">
+                        <button id="download-json-btn" class="btn btn-secondary">Download JSON</button>
+                        <button id="download-csv-btn" class="btn btn-secondary">Download CSV</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
 </html>

@@ -15,7 +15,37 @@ public enum BenchmarkStatus
 }
 
 /// <summary>
-/// Response containing benchmark execution status and performance metrics.
+/// Contains details about a CRUD operation and its verification result.
+/// </summary>
+/// <param name="Operation">CRUD operation being verified.</param>
+/// <param name="TargetId">Original Aras Item ID.</param>
+/// <param name="UpdatedId">Item ID returned after an update, if different.</param>
+/// <param name="PropertyName">Property involved in the operation.</param>
+/// <param name="BeforeGeneration">Item generation before the operation.</param>
+/// <param name="AfterGeneration">Item generation after the operation.</param>
+/// <param name="BeforeValue">Property value before the operation.</param>
+/// <param name="AfterValue">Property value after the operation.</param>
+/// <param name="IsVerified">Whether the expected operation result was verified.</param>
+/// <param name="VerifiedNotFound">Whether the target item was confirmed missing.</param>
+/// <param name="VerificationNote">Additional verification information.</param>
+/// <param name="CleanedUp">Whether temporary test data was cleaned up.</param>
+public sealed record CrudVerification(
+    string Operation,
+    string? TargetId = null,
+    string? UpdatedId = null,
+    string? PropertyName = null,
+    string? BeforeGeneration = null,
+    string? AfterGeneration = null,
+    string? BeforeValue = null,
+    string? AfterValue = null,
+    bool? IsVerified = null,
+    bool? VerifiedNotFound = null,
+    string? VerificationNote = null,
+    bool? CleanedUp = null);
+
+/// <summary>
+/// Response containing benchmark execution status, performance metrics,
+/// and optional CRUD verification details.
 /// </summary>
 /// <param name="JobId">Unique identifier for the benchmark run.</param>
 /// <param name="Status">Current or final benchmark status.</param>
@@ -26,6 +56,7 @@ public enum BenchmarkStatus
 /// <param name="CompletedAtUtc">UTC time when execution finished, if available.</param>
 /// <param name="Statistics">Aggregated performance metrics, if available.</param>
 /// <param name="ErrorMessage">Error description if execution failed.</param>
+/// <param name="Verification">Optional details of a verified CRUD operation.</param>
 public sealed record BenchmarkStatusResponse(
     Guid JobId,
     BenchmarkStatus Status,
@@ -35,4 +66,5 @@ public sealed record BenchmarkStatusResponse(
     DateTime CreatedAtUtc,
     DateTime? CompletedAtUtc,
     BenchmarkStatistics? Statistics,
-    string? ErrorMessage);
+    string? ErrorMessage,
+    CrudVerification? Verification = null);
