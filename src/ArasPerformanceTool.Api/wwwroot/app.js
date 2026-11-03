@@ -43,6 +43,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const downloadJsonBtn = byId("download-json-btn");
     const downloadCsvBtn = byId("download-csv-btn");
 
+    const clearAmlBtn = document.getElementById("clearAmlBtn");
+
     // Operation Details panel
     const vPanel = byId("verification-panel");
     const vContent = byId("verification-content");
@@ -81,6 +83,18 @@ document.addEventListener("DOMContentLoaded", () => {
                 descriptions[operation.value] || "";
         }
     }
+
+        // Clear Custom AML input
+        clearAmlBtn?.addEventListener("click", () => {
+            const amlInput = document.getElementById("amlPayload");
+
+            if (!amlInput) return;
+
+            amlInput.value = "";
+            amlInput.dispatchEvent(new Event("input", { bubbles: true }));
+            amlInput.focus();
+        });
+
 
     // =====================================================
     // 3. Custom AML Syntax Validation
@@ -226,8 +240,142 @@ document.addEventListener("DOMContentLoaded", () => {
         downloadCsvBtn.disabled = true;
     }
 
+
     // =====================================================
-    // 5. Dynamic CRUD Verification Rendering
+    // 5. Custom AML Query Result Details
+// =====================================================
+
+function renderAmlQueryResults(queryResult) {
+    const panel = document.getElementById("aml-result-panel");
+    const content = document.getElementById("aml-result-content");
+    const count = document.getElementById("aml-result-count");
+    const xmlPreview = document.getElementById("aml-response-xml");
+
+    if (!panel || !content || !count || !xmlPreview) return;
+
+    content.replaceChildren();
+    count.textContent = "";
+    xmlPreview.textContent = "";
+
+    if (!queryResult?.responseXml) {
+        panel.classList.add("hidden");
+        return;
+    }
+
+    const xml = queryResult.responseXml;
+    const documentXml = new DOMParser().parseFromString(
+        xml,
+        "application/xml"
+    );
+
+    if (documentXml.getElementsByTagName("parsererror").length > 0) {
+        panel.classList.remove("hidden");
+        content.textContent = "Unable to parse the AML response XML.";
+        xmlPreview.textContent = xml;
+        return;
+    }
+
+    panel.classList.remove("hidden");
+    xmlPreview.textContent = xml;
+
+    const items = Array.from(
+        documentXml.getElementsByTagName("*")
+    ).filter(element => element.localName === "Item");
+
+    count.textContent = `${items.length} Items`;
+
+    if (items.length === 0) {
+        content.textContent = "No items returned.";
+        return;
+    }
+
+    const maxRows = 50;
+    const visibleItems = items.slice(0, maxRows);
+
+    // Collect fields dynamically from returned XML.
+    const rows = visibleItems.map(item => {
+        const row = {
+            ItemType: item.getAttribute("type") || "Unknown",
+            ID: item.getAttribute("id") || ""
+        };
+
+        for (const child of item.children) {
+            if (child.localName === "Relationships") continue;
+            
+             // ID is already displayed from the Item attribute.
+            if (child.localName.toLowerCase() === "id") continue;
+
+            // Avoid flattening nested Item elements into text.
+            if (Array.from(child.getElementsByTagName("*"))
+                .some(element => element.localName === "Item")) {
+                continue;
+            }
+
+            row[child.localName] = child.textContent?.trim() || "";
+        }
+
+        return row;
+    });
+
+    const columns = [
+        "ItemType",
+        "ID",
+        ...new Set(rows.flatMap(row =>
+            Object.keys(row).filter(key =>
+                key !== "ItemType" && key !== "ID"
+            )
+        ))
+    ];
+
+    // Limit columns to keep the table readable.
+    const visibleColumns = columns.slice(0, 14);
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "aml-table-wrapper";
+
+    const table = document.createElement("table");
+    table.className = "aml-result-table";
+
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+
+    visibleColumns.forEach(column => {
+        const th = document.createElement("th");
+        th.textContent = column;
+        headerRow.appendChild(th);
+    });
+
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+
+    rows.forEach(row => {
+        const tr = document.createElement("tr");
+
+        visibleColumns.forEach(column => {
+            const td = document.createElement("td");
+            td.textContent = row[column] ?? "";
+            tr.appendChild(td);
+        });
+
+        tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+    content.appendChild(wrapper);
+
+    if (items.length > maxRows) {
+        const notice = document.createElement("p");
+        notice.className = "aml-result-notice";
+        notice.textContent =
+            `Showing the first ${maxRows} of ${items.length} returned Items.`;
+        content.appendChild(notice);
+    }
+}
+    // =====================================================
+    // 6. Dynamic CRUD Verification Rendering
     // =====================================================
 
     function renderVerification(v) {
@@ -287,7 +435,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     "Sample Item ID",
                     v.targetId
                 );
-
+                addDetail(
+                    "Sample Name",
+                    v.afterValue
+                );
                 addDetail(
                     "Verification State",
                     verificationText(
@@ -400,7 +551,8 @@ document.addEventListener("DOMContentLoaded", () => {
             v.cleanedUp
         );
 
-        if (v.verificationNote) {
+       // Hide redundant audit notes for Create,delete.
+        if (v.verificationNote && ["Update", "Delete"].includes(v.operation)) {
             addDetail(
                 "Audit Note",
                 v.verificationNote,
@@ -414,7 +566,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // =====================================================
-    // 6. Render Benchmark Results
+    // 7. Render Benchmark Results
     // =====================================================
 
     function renderResults(data, isOk) {
@@ -482,13 +634,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Dynamic Operation Details
         renderVerification(data.verification);
+        renderAmlQueryResults(data.queryResult);
 
         downloadJsonBtn.disabled = !currentJobId;
         downloadCsvBtn.disabled = !currentJobId;
     }
 
     // =====================================================
-    // 7. Submit Benchmark Request
+    // 8. Submit Benchmark Request
     // =====================================================
 
     form.addEventListener("submit", async event => {
@@ -595,7 +748,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // =====================================================
-    // 8. Report Downloads
+    // 9. Report Downloads
     // =====================================================
 
     function downloadReport(format) {
@@ -616,7 +769,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // =====================================================
-    // 9. Event Listeners and Initialization
+    // 10. Event Listeners and Initialization
     // =====================================================
 
     benchmarkMode.addEventListener("change", updateMode);

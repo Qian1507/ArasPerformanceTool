@@ -212,4 +212,59 @@ public static class AmlParser
 
         return Enumerable.Empty<XElement>();
     }
+
+    /// <summary>
+    /// Validates AML structure for Custom AML CRUD benchmarks.
+    /// Allows standard CRUD actions and nested Item elements.
+    /// This is structural validation, not authorization.
+    /// </summary>
+    public static void ValidateCustomAml(string rawXml)
+    {
+        var document = ParseXml(rawXml);
+
+        var items = GetTopLevelItems(document).ToList();
+
+        if (items.Count != 1)
+        {
+            throw new ArgumentException(
+                "Custom AML requires exactly one top-level Item.");
+        }
+
+        var allowedActions = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            "get",
+            "add",
+            "edit",
+            "delete"
+        };
+
+        foreach (var item in items[0].DescendantsAndSelf()
+            .Where(e => e.Name.LocalName == "Item"))
+        {
+            var itemType = (string?)item.Attribute("type");
+            var action = (string?)item.Attribute("action");
+
+            if (string.IsNullOrWhiteSpace(itemType))
+            {
+                throw new ArgumentException(
+                    "Every Item must specify a type attribute.");
+            }
+
+            if (string.IsNullOrWhiteSpace(action) ||
+                !allowedActions.Contains(action))
+            {
+                throw new ArgumentException(
+                    $"Unsupported AML action '{action}'. " +
+                    "Only get, add, edit and delete are allowed.");
+            }
+        }
+
+        if (document.Descendants().Any(e =>
+            e.Name.LocalName is "Method" or "SQL"))
+        {
+            throw new ArgumentException(
+                "Method and SQL elements are not supported.");
+        }
+    }
 }

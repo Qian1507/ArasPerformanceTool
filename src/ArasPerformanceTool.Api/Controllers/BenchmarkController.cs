@@ -170,6 +170,7 @@ public class BenchmarkController : ControllerBase
         BenchmarkReport? report = null;
         BenchmarkStatistics? statistics = null;
         CrudVerification? verification = null;
+        AmlQueryResult? queryResult = null;
 
         var status = BenchmarkStatus.Completed;
         string? errorMessage = null;
@@ -211,17 +212,34 @@ public class BenchmarkController : ControllerBase
 
             if (isRawAml)
             {
-                // Run exactly the same read-only AML each time.
+                // Capture one successful response during benchmark execution.
+                // Do not send an additional AML request for result inspection.
+                string? sampleResponseXml = null;
+
                 report = await runner.RunAsync(
                     workloadName,
                     config,
                     async _ =>
                     {
-                        await _arasClient.ExecuteAmlAsync(
+                        var responseXml = await _arasClient.ExecuteAmlAsync(
                             serverUrl,
                             token,
                             executableAml!);
+
+                        // Keep only the first successful response.
+                        // Safe when multiple iterations run concurrently.
+                        Interlocked.CompareExchange(
+                            ref sampleResponseXml,
+                            responseXml,
+                            null);
                     });
+
+                // Prepare the sample outside benchmark timing.
+                if (!string.IsNullOrWhiteSpace(sampleResponseXml))
+                {
+                    queryResult = new AmlQueryResult(
+                        ResponseXml: sampleResponseXml);
+                }
             }
             else
             {
@@ -747,8 +765,20 @@ public class BenchmarkController : ControllerBase
             if (statistics.FailureCount > 0)
             {
                 status = BenchmarkStatus.Failed;
+
+                // Get the first meaningful error from failed operations.
+                var firstError = report.RawMeasurements
+                    .Where(m => !m.IsSuccess)
+                    .Select(m => m.ErrorMessage)
+                    .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message));
+
                 errorMessage =
                     $"{statistics.FailureCount} benchmark operations failed.";
+
+                if (!string.IsNullOrWhiteSpace(firstError))
+                {
+                    errorMessage += $" Reason: {firstError}";
+                }
             }
 
             if (verification?.IsVerified == false)
@@ -762,23 +792,23 @@ public class BenchmarkController : ControllerBase
             await _fileResultStore.SaveAsync(
                 jobId,
                 report);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Benchmark failed: JobId={JobId}",
-                jobId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Benchmark failed: JobId={JobId}",
+                    jobId);
 
-            status = BenchmarkStatus.Failed;
+                status = BenchmarkStatus.Failed;
 
-            errorMessage =
-                "Benchmark execution or cleanup failed. Check server logs.";
-        }
+                errorMessage =
+                    "Benchmark execution or cleanup failed. Check server logs.";
+            }
 
-        // =====================================================
-        // 8. Build API Response
-        // =====================================================
+            // =====================================================
+            // 8. Build API Response
+            // =====================================================
 
         var response = new BenchmarkStatusResponse(
             JobId: jobId,
@@ -790,7 +820,8 @@ public class BenchmarkController : ControllerBase
             CompletedAtUtc: DateTime.UtcNow,
             Statistics: statistics,
             ErrorMessage: errorMessage,
-            Verification: verification);
+            Verification: verification,
+            QueryResult: queryResult);
 
         Jobs[jobId] = response;
 

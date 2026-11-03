@@ -484,3 +484,86 @@ textarea::placeholder {
     font-family: inherit;
 }
 
+/* =====================================================
+   Custom AML Query Result Details
+   ===================================================== */
+
+.aml-result-panel {
+    margin-top: 24px;
+    padding: 24px;
+    background: var(--card-bg, #fff);
+    border: 1px solid #dfe3e8;
+    border-radius: 12px;
+}
+
+.aml-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.aml-result-header h3 {
+    margin: 0;
+}
+
+#aml-result-count {
+    font-size: 13px;
+    color: #64748b;
+}
+
+.aml-table-wrapper {
+    overflow-x: auto;
+    max-height: 440px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+}
+
+.aml-result-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.aml-result-table th,
+.aml-result-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.aml-result-table th {
+    background: #f8fafc;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+
+.aml-result-notice {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 12px;
+}
+
+.aml-xml-details {
+    margin-top: 20px;
+}
+
+.aml-xml-details summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+#aml-response-xml {
+    margin-top: 12px;
+    padding: 16px;
+    max-height: 400px;
+    overflow: auto;
+    background: #f1f5f9;
+    border-radius: 8px;
+    font-size: 12px;
+    white-space: pre;
+}

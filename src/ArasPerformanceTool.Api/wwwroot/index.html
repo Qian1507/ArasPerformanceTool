@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aras Innovator Benchmark Dashboard</title>
+    <title>Aras Innovator Performance Metrics Tool</title>
     <link rel="stylesheet" href="style.css">
 
     <link rel="icon" href="data:,">
@@ -11,7 +11,7 @@
 <body>
     <div class="container">
         <header class="header">
-            <h1>Aras Performance Benchmark Tool</h1>
+            <h1>Aras Innovator Performance Metrics Tool</h1>
             <p class="subtitle">Execute AML operations, capture latency percentiles, and analyze throughput.</p>
         </header>
 
@@ -56,6 +56,13 @@
                             <label for="amlPayload">Custom AML Payload (XML)</label>
                             <span id="aml-parse-status" class="parse-status">Waiting for input...</span>
                         </div>
+                        <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+                            <button type="button"
+                                    id="clearAmlBtn"
+                                    class="btn btn-secondary">
+                                Clear AML
+                            </button>
+                        </div>
                         <textarea id="amlPayload" name="amlPayload" rows="7" placeholder="<Item type=&quot;Part&quot; action=&quot;get&quot; select=&quot;item_number,name&quot; />"></textarea>
                     </div>
 
@@ -99,6 +106,21 @@
                         <!-- Verification details are dynamically rendered by app.js -->
                     </div>
                 </div>
+
+                <!-- Custom AML Query Result Details -->
+                <section id="aml-result-panel" class="aml-result-panel hidden">
+                    <div class="aml-result-header">
+                        <h3>AML Query Result Details</h3>
+                        <span id="aml-result-count"></span>
+                    </div>
+
+                    <div id="aml-result-content"></div>
+
+                    <details class="aml-xml-details">
+                        <summary>View Raw XML Response</summary>
+                        <pre id="aml-response-xml"></pre>
+                    </details>
+                </section>
 
                 <div class="metrics-grid">
                     <div class="metric-box">

@@ -43,6 +43,14 @@ public sealed record CrudVerification(
     string? VerificationNote = null,
     bool? CleanedUp = null);
 
+
+/// <summary>
+/// Contains a sample XML response from a Custom AML query.
+/// The response is captured during benchmark execution.
+/// </summary>
+public sealed record AmlQueryResult(
+    string ResponseXml);
+
 /// <summary>
 /// Response containing benchmark execution status, performance metrics,
 /// and optional CRUD verification details.
@@ -57,6 +65,9 @@ public sealed record CrudVerification(
 /// <param name="Statistics">Aggregated performance metrics, if available.</param>
 /// <param name="ErrorMessage">Error description if execution failed.</param>
 /// <param name="Verification">Optional details of a verified CRUD operation.</param>
+/// /// <param name="QueryResult">
+/// Optional sample response from a Custom AML query.
+/// </param>
 public sealed record BenchmarkStatusResponse(
     Guid JobId,
     BenchmarkStatus Status,
@@ -67,4 +78,5 @@ public sealed record BenchmarkStatusResponse(
     DateTime? CompletedAtUtc,
     BenchmarkStatistics? Statistics,
     string? ErrorMessage,
-    CrudVerification? Verification = null);
+    CrudVerification? Verification = null,
+    AmlQueryResult? QueryResult = null);
