@@ -1,70 +1,370 @@
 
-using System.Collections.Concurrent;
+using System.Text.Json;
 
 namespace ArasPerformanceTool.Engine.Benchmarking;
 
-public class TestDataManifest
+public enum TrackedItemStatus
 {
-    // Track test records using a unique ItemType + ItemId key
-    private readonly ConcurrentDictionary<string, TrackedItem> _items = new();
+    Active,
+    DeletePending,
+    Deleted,
+    AlreadyMissing,
+    CleanupFailed
+}
 
-    // Unique identifier for the current benchmark run
-    public string RunId { get; } = Guid.NewGuid().ToString("N");
+public enum TestItemSource
+{
+    Standard,
+    CustomAml
+}
 
-    public DateTime CreatedAtUtc { get; } = DateTime.UtcNow;
+public sealed record TrackedItem(
+    string ItemType,
+    string Id,
+    DateTime CreatedAtUtc)
+{
+    public TrackedItemStatus Status { get; init; }
+        = TrackedItemStatus.Active;
 
-    // Return a snapshot of all currently tracked records
-    public IReadOnlyList<TrackedItem> Items => _items.Values.ToList();
+    public TestItemSource Source { get; init; }
+        = TestItemSource.Standard;
 
-    public int TotalCount => _items.Count;
+    public string? ConfigId { get; init; }
+    public string? ParentItemId { get; init; }
+    public string? LastError { get; init; }
+}
 
-    // Register a record created by the benchmark
+public sealed class TestDataManifest
+{
+    private readonly object _sync = new();
+
+    private readonly Dictionary<string, TrackedItem> _items =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly string? _filePath;
+
+    public string RunId { get; private set; }
+    public string? EnvironmentId { get; private set; }
+    public DateTime CreatedAtUtc { get; private set; }
+
+    public TestDataManifest(
+        string? environmentId = null,
+        string? filePath = null)
+    {
+        if (filePath != null &&
+            string.IsNullOrWhiteSpace(environmentId))
+        {
+            throw new ArgumentException(
+                "EnvironmentId is required for persistence.");
+        }
+
+        EnvironmentId = environmentId;
+        _filePath = filePath;
+
+        RunId = Guid.NewGuid().ToString("N");
+        CreatedAtUtc = DateTime.UtcNow;
+
+        lock (_sync)
+        {
+            PersistUnderLock();
+        }
+    }
+
+    private TestDataManifest(
+        string filePath,
+        ManifestSnapshot snapshot)
+    {
+        _filePath = filePath;
+        RunId = snapshot.RunId;
+        EnvironmentId = snapshot.EnvironmentId;
+        CreatedAtUtc = snapshot.CreatedAtUtc;
+
+        foreach (var item in snapshot.Items)
+        {
+            _items[GetKey(item.ItemType, item.Id)] = item;
+        }
+    }
+
+    public static TestDataManifest Load(
+        string filePath,
+        string expectedEnvironmentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            expectedEnvironmentId);
+
+        var json = File.ReadAllText(filePath);
+
+        var snapshot =
+            JsonSerializer.Deserialize<ManifestSnapshot>(json)
+            ?? throw new InvalidDataException(
+                "Manifest is empty.");
+
+        if (snapshot.SchemaVersion != 1)
+        {
+            throw new InvalidDataException(
+                "Unsupported manifest version.");
+        }
+
+        if (!string.Equals(
+            snapshot.EnvironmentId,
+            expectedEnvironmentId,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Aras environment mismatch.");
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshot.RunId) ||
+            snapshot.Items == null)
+        {
+            throw new InvalidDataException(
+                "Manifest is missing required data.");
+        }
+
+        return new TestDataManifest(filePath, snapshot);
+    }
+
+    public IReadOnlyList<TrackedItem> Items
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _items.Values.ToArray();
+            }
+        }
+    }
+
+    public IReadOnlyList<TrackedItem> ActiveItems
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _items.Values
+                    .Where(x =>
+                        x.Status == TrackedItemStatus.Active)
+                    .ToArray();
+            }
+        }
+    }
+
+    public IReadOnlyList<TrackedItem> UnresolvedItems
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _items.Values
+                    .Where(x =>
+                        x.Status != TrackedItemStatus.Deleted &&
+                        x.Status != TrackedItemStatus.AlreadyMissing)
+                    .ToArray();
+            }
+        }
+    }
+
+    // Compatible with existing controller checks.
+    public int TotalCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _items.Values.Count(x =>
+                    x.Status != TrackedItemStatus.Deleted &&
+                    x.Status != TrackedItemStatus.AlreadyMissing);
+            }
+        }
+    }
+    
     public void Track(string itemType, string id)
+    {
+        Track(itemType, id, TestItemSource.Standard);
+    }
+
+    public void Track(
+        string itemType,
+        string id,
+        TestItemSource source,
+        string? configId = null,
+        string? parentItemId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(itemType);
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
 
-        var key = GetKey(itemType, id);
+        lock (_sync)
+        {
+            var key = GetKey(itemType, id);
 
-        _items.TryAdd(
-            key,
-            new TrackedItem(itemType, id, DateTime.UtcNow));
+            if (_items.ContainsKey(key))
+                return;
+
+            _items[key] = new TrackedItem(
+                itemType, id, DateTime.UtcNow)
+            {
+                Source = source,
+                ConfigId = configId,
+                ParentItemId = parentItemId
+            };
+
+            PersistUnderLock();
+        }
     }
 
-    // Get tracked IDs belonging to a specific ItemType
     public IReadOnlyList<string> GetIds(string itemType)
     {
-        return _items.Values
-            .Where(x => string.Equals(
-                x.ItemType,
-                itemType,
-                StringComparison.OrdinalIgnoreCase))
-            .Select(x => x.Id)
-            .ToList();
+        lock (_sync)
+        {
+            return _items.Values
+                .Where(x =>
+                    x.Status != TrackedItemStatus.Deleted &&
+                    x.Status != TrackedItemStatus.AlreadyMissing &&
+                    string.Equals(
+                        x.ItemType,
+                        itemType,
+                        StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.Id)
+                .ToArray();
+        }
     }
 
-    // Remove a record only after cleanup is confirmed
+    public bool MarkPending(string itemType, string id)
+    {
+        return UpdateStatus(
+            itemType, id,
+            TrackedItemStatus.DeletePending);
+    }
+
+    public bool MarkDeleted(string itemType, string id)
+    {
+        return UpdateStatus(
+            itemType, id,
+            TrackedItemStatus.Deleted);
+    }
+
+    public bool MarkAlreadyMissing(string itemType, string id)
+    {
+        return UpdateStatus(
+            itemType,
+            id,
+            TrackedItemStatus.AlreadyMissing);
+    }
+    
+    public bool MarkFailed(
+        string itemType,
+        string id,
+        string? error = null)
+    {
+        return UpdateStatus(
+            itemType, id,
+            TrackedItemStatus.CleanupFailed,
+            error);
+    }
+
+    // Backward compatibility with existing CleanupAsync.
     public bool Remove(string itemType, string id)
     {
-        return _items.TryRemove(
-            GetKey(itemType, id),
-            out _);
+        return MarkDeleted(itemType, id);
     }
 
-    // Clear all tracked records (not used for normal cleanup)
+    // Explicit reset only, not normal cleanup.
     public void Clear()
     {
-        _items.Clear();
+        lock (_sync)
+        {
+            _items.Clear();
+            PersistUnderLock();
+        }
     }
 
-    private static string GetKey(string itemType, string id)
+    private bool UpdateStatus(
+        string itemType,
+        string id,
+        TrackedItemStatus status,
+        string? error = null)
     {
-        return $"{itemType.ToUpperInvariant()}:{id.ToUpperInvariant()}";
-    }
-}
+        lock (_sync)
+        {
+            var key = GetKey(itemType, id);
 
-// Represents a record created by a benchmark run
-public sealed record TrackedItem(
-    string ItemType,
-    string Id,
-    DateTime CreatedAtUtc);
+            if (!_items.TryGetValue(key, out var item))
+                return false;
+
+            _items[key] = item with
+            {
+                Status = status,
+                LastError = error
+            };
+
+            PersistUnderLock();
+            return true;
+        }
+    }
+
+    private void PersistUnderLock()
+    {
+        if (_filePath == null)
+            return;
+
+        var fullPath = Path.GetFullPath(_filePath);
+        var directory = Path.GetDirectoryName(fullPath)!;
+
+        Directory.CreateDirectory(directory);
+
+        var tempPath = fullPath + "." +
+            Guid.NewGuid().ToString("N") + ".tmp";
+
+        try
+        {
+            var snapshot = new ManifestSnapshot(
+                1,
+                RunId,
+                EnvironmentId!,
+                CreatedAtUtc,
+                _items.Values.ToArray());
+
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(
+                snapshot,
+                new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+
+            using (var stream = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+
+            // Temp file and manifest are in the same directory.
+            // Overwrite the existing manifest with the new snapshot.
+            File.Move(tempPath, fullPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+    }
+
+    private static string GetKey(
+        string itemType,
+        string id)
+    {
+        return $"{itemType.ToUpperInvariant()}:" +
+               $"{id.ToUpperInvariant()}";
+    }
+
+    private sealed record ManifestSnapshot(
+        int SchemaVersion,
+        string RunId,
+        string EnvironmentId,
+        DateTime CreatedAtUtc,
+        IReadOnlyList<TrackedItem> Items);
+}

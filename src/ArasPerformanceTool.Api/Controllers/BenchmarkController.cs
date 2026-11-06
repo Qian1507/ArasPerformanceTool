@@ -229,6 +229,15 @@ public async Task<IActionResult> StartBenchmark(
             var serverUrl = _configuration["Aras:ServerUrl"]
                 ?? throw new InvalidOperationException(
                     "Aras Server URL is missing.");
+            
+            // Identify the Aras environment used by this benchmark.
+            // Both server and database matter.
+            var database = _configuration["Aras:Database"]
+                ?? throw new InvalidOperationException(
+                    "Aras Database is missing.");
+
+            var environmentId =
+                $"{serverUrl.TrimEnd('/')}|{database}";
 
             var username = _configuration["ARAS_USERNAME"];
             var password = _configuration["ARAS_PASSWORD"];
@@ -292,7 +301,12 @@ public async Task<IActionResult> StartBenchmark(
                 // 5. Standard CRUD Benchmark
                 // =============================================
 
-                var dataManager = new TestDataManager(_arasClient);
+               var manifest = new TestDataManifest(
+                    environmentId: environmentId);
+
+                var dataManager = new TestDataManager(
+                    _arasClient,
+                    manifest);
 
                 var createWorkload =
                     new CreateWorkload(_arasClient);
@@ -773,7 +787,8 @@ public async Task<IActionResult> StartBenchmark(
                         await dataManager.CleanupAsync(
                             serverUrl,
                             token,
-                            itemType);
+                            itemType,
+                            expectedEnvironmentId: environmentId);
 
                     var cleanupSucceeded =
                         cleanupResult.FailedIds.Count == 0 &&

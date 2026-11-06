@@ -1,36 +1,34 @@
 
+using System.Net;
+using System.Xml.Linq;
 using ArasPerformanceTool.Engine.Aras;
-using Xunit;
 using ArasPerformanceTool.Engine.Exceptions;
+using Xunit;
 
 namespace ArasPerformanceTool.Tests.Integration;
 
-public class ArasClientTests
+[Collection("Aras Integration")]
+public sealed class ArasClientTests
 {
+    private readonly ArasFixture _aras;
+
+    public ArasClientTests(ArasFixture aras)
+    {
+        _aras = aras;
+    }
+
     [Fact]
     public async Task GetAccessTokenAsync_ShouldReturnValidToken_WhenCredentialsAreValid()
     {
         // Arrange
-        using var httpClient = new HttpClient();
-
-        const string oauthUrl =
-            "http://localhost/InnovatorServer/OAuthServer/connect/token";
-
-        const string database = "InnovatorSolutions";
-
         var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
         var password = Environment.GetEnvironmentVariable("ARAS_PASSWORD");
 
         Assert.False(string.IsNullOrWhiteSpace(username));
         Assert.False(string.IsNullOrWhiteSpace(password));
 
-        var client = new ArasClient(
-            httpClient,
-            oauthUrl,
-            database);
-
-        // Act
-        var token = await client.GetAccessTokenAsync(
+        // Act: actually request a new token.
+        var token = await _aras.Client.GetAccessTokenAsync(
             username!,
             password!);
 
@@ -38,208 +36,135 @@ public class ArasClientTests
         Assert.False(string.IsNullOrWhiteSpace(token));
     }
 
-    
     [Fact]
     public async Task ExecuteAmlAsync_ShouldReturnParts()
     {
         // Arrange
-        var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
-        var password = Environment.GetEnvironmentVariable("ARAS_PASSWORD");
-
-        Assert.False(string.IsNullOrWhiteSpace(username));
-        Assert.False(string.IsNullOrWhiteSpace(password));
-
-        using var httpClient = new HttpClient();
-
-        var client = new ArasClient(
-            httpClient,
-            "http://localhost/InnovatorServer/OAuthServer/connect/token",
-            "InnovatorSolutions");
-
-        var token = await client.GetAccessTokenAsync(
-            username!,
-            password!);
-
-        const string serverUrl =
-            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx";
-
         const string aml = """
             <AML>
                 <Item type="Part"
-                    action="get"
-                    select="id,item_number"
-                    maxRecords="5" />
+                      action="get"
+                      select="id,item_number"
+                      maxRecords="5" />
             </AML>
             """;
 
         // Act
-        var result = await client.ExecuteAmlAsync(
-            serverUrl,
-            token,
-            aml);
+        var result = await _aras.ExecuteAmlAsync(aml);
 
         // Assert
         Assert.False(string.IsNullOrWhiteSpace(result));
 
-        var xml = System.Xml.Linq.XDocument.Parse(result);
+        var xml = XDocument.Parse(result);
 
-        Assert.False(
-            xml.Descendants()
-            .Any(e => e.Name.LocalName == "Fault"),
-            "Aras returned a SOAP fault.");
+        Assert.DoesNotContain(
+            xml.Descendants(),
+            e => e.Name.LocalName == "Fault");
 
-        Assert.True(
-            xml.Descendants()
-            .Any(e => e.Name.LocalName == "Item"
-                    && (string?)e.Attribute("type") == "Part"),
-            "No Part items were returned.");
+        Assert.Contains(
+            xml.Descendants(),
+            e => e.Name.LocalName == "Item"
+                 && (string?)e.Attribute("type") == "Part");
     }
 
-
-    
-    
     [Fact]
     public async Task GetAccessTokenAsync_ShouldThrow_WhenPasswordIsWrong()
     {
-        // Arrange: Retrieve test username from environment variables
-        var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
+        // Arrange
+        const string wrongPassword =
+            "InvalidPassword_ForTesting_123!";
 
-        Assert.False(string.IsNullOrWhiteSpace(username));
-
-        using var httpClient = new HttpClient();
-
-        var client = new ArasClient(
-            httpClient,
-            "http://localhost/InnovatorServer/OAuthServer/connect/token",
-            "InnovatorSolutions");
-
-        const string wrongPassword = "InvalidPassword_ForTesting_123!";
-
-        // Act & Assert: Invalid credentials must cause authentication failure
+        // Act & Assert
         var exception = await Assert.ThrowsAsync<HttpRequestException>(
-            () => client.GetAccessTokenAsync(
-                username!,
+            () => _aras.Client.GetAccessTokenAsync(
+                _aras.Username,
                 wrongPassword));
 
-        // The client may omit HTTP status when wrapping OAuth errors
-        // Verify the exception contains a meaningful error message
         Assert.False(string.IsNullOrWhiteSpace(exception.Message));
 
-        // If a status code is available, it should indicate an authentication error
         if (exception.StatusCode is not null)
         {
             Assert.True(
                 exception.StatusCode is
-                    System.Net.HttpStatusCode.BadRequest or
-                    System.Net.HttpStatusCode.Unauthorized,
+                    HttpStatusCode.BadRequest or
+                    HttpStatusCode.Unauthorized,
                 $"Unexpected HTTP status: {exception.StatusCode}");
         }
     }
-
-
 
     [Fact]
     public async Task ExecuteAmlAsync_ShouldCreatePart()
     {
         // Arrange
-        var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
-        var password = Environment.GetEnvironmentVariable("ARAS_PASSWORD");
+        var itemNumber =
+            $"LIA-PROJECT-{Guid.NewGuid():N}"[..24];
 
-        Assert.False(string.IsNullOrWhiteSpace(username));
-        Assert.False(string.IsNullOrWhiteSpace(password));
+        var properties = new Dictionary<string, string>
+        {
+            ["item_number"] = itemNumber,
+            ["name"] = "AML Create Test"
+        };
 
-        using var httpClient = new HttpClient();
+        string? createdId = null;
 
-        var client = new ArasClient(
-            httpClient,
-            "http://localhost/InnovatorServer/OAuthServer/connect/token",
-            "InnovatorSolutions");
+        try
+        {
+            // Act
+            var result = await _aras.CreateItemAsync(
+                "Part",
+                properties);
 
-        var token = await client.GetAccessTokenAsync(
-            username!,
-            password!);
+            // Assert
+            var xml = XDocument.Parse(result);
 
-        const string serverUrl =
-            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx";
+            Assert.DoesNotContain(
+                xml.Descendants(),
+                e => e.Name.LocalName == "Fault");
 
-        var itemNumber = $"LIA-PROJECT-{Guid.NewGuid():N}"[..24];
+            var createdItem = xml.Descendants()
+                .FirstOrDefault(e =>
+                    e.Name.LocalName == "Item"
+                    && (string?)e.Attribute("type") == "Part");
 
-        var aml = AmlBuilder.Create(
-            "Part",
-            new Dictionary<string, string>
+            Assert.NotNull(createdItem);
+
+            createdId = (string?)createdItem.Attribute("id");
+
+            Assert.False(string.IsNullOrWhiteSpace(createdId));
+        }
+        finally
+        {
+            // Clean up the Part created by this test only.
+            if (!string.IsNullOrWhiteSpace(createdId))
             {
-                ["item_number"] = itemNumber,
-                ["name"] = "AML Create Test"
-            });
-
-        // Act
-        var result = await client.ExecuteAmlAsync(
-            serverUrl,
-            token,
-            aml);
-
-        // Assert
-        var xml = System.Xml.Linq.XDocument.Parse(result);
-
-        var faults = xml.Descendants()
-            .Where(e => e.Name.LocalName == "Fault");
-
-        Assert.Empty(faults);
-
-        var createdItem = xml.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "Item" &&
-                (string?)e.Attribute("type") == "Part");
-
-        Assert.NotNull(createdItem);
-
-        var id = (string?)createdItem.Attribute("id");
-        Assert.False(string.IsNullOrWhiteSpace(id));
+                await _aras.DeleteItemAsync(
+                    "Part",
+                    createdId);
+            }
+        }
     }
 
-    
     [Fact]
     public async Task ExecuteAmlAsync_ShouldThrowArasException_WhenItemTypeIsInvalid()
     {
         // Arrange
-        var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
-        var password = Environment.GetEnvironmentVariable("ARAS_PASSWORD");
-
-        Assert.False(string.IsNullOrWhiteSpace(username));
-        Assert.False(string.IsNullOrWhiteSpace(password));
-
-        using var httpClient = new HttpClient();
-
-        var arasClient = new ArasClient(
-            httpClient,
-            "http://localhost/InnovatorServer/OAuthServer/connect/token",
-            "InnovatorSolutions");
-
-        var token = await arasClient.GetAccessTokenAsync(
-            username!,
-            password!);
-
-        const string serverUrl =
-            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx";
-
         const string invalidAml = """
             <AML>
                 <Item type="LIA_NONEXISTENT_ITEMTYPE_999"
-                    action="get" />
+                      action="get" />
             </AML>
             """;
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<ArasException>(
-            () => arasClient.ExecuteAmlAsync(
-                serverUrl,
-                token,
-                invalidAml));
+            () => _aras.ExecuteAmlAsync(invalidAml));
 
-        Assert.False(string.IsNullOrWhiteSpace(exception.FaultCode));
+        Assert.False(
+            string.IsNullOrWhiteSpace(exception.FaultCode));
+
         Assert.NotEqual("0", exception.FaultCode);
-        Assert.False(string.IsNullOrWhiteSpace(exception.FaultString));
+
+        Assert.False(
+            string.IsNullOrWhiteSpace(exception.FaultString));
     }
-
-
 }

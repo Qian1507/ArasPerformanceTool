@@ -1,44 +1,37 @@
 
 using System.Xml.Linq;
-using ArasPerformanceTool.Engine.Aras;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
 using Xunit;
 
 namespace ArasPerformanceTool.Tests.Integration;
 
-public class CrudLifecycleTests
+[Collection("Aras Integration")]
+public sealed class CrudLifecycleTests
 {
-    private const string OAuthUrl =
-        "http://localhost/InnovatorServer/OAuthServer/connect/token";
+    private readonly ArasFixture _aras;
 
-    private const string ServerUrl =
-        "http://localhost/InnovatorServer/Server/InnovatorServer.aspx";
-
-    private const string Database = "InnovatorSolutions";
+    public CrudLifecycleTests(ArasFixture aras)
+    {
+        _aras = aras;
+    }
 
     // Test 1: Create a Part
     [Fact]
     public async Task CreateWorkload_ShouldCreatePart()
     {
         // Arrange
-        using var httpClient = new HttpClient();
-        var arasClient = new ArasClient(httpClient, OAuthUrl, Database);
-
-        var token = await GetTokenAsync(arasClient);
-        var workload = new CreateWorkload(arasClient);
-
-        var itemNumber = GenerateItemNumber();
+        var workload = new CreateWorkload(_aras.Client);
 
         var properties = new Dictionary<string, string>
         {
-            ["item_number"] = itemNumber,
+            ["item_number"] = GenerateItemNumber(),
             ["name"] = "Create Workload Test"
         };
 
         // Act
         var result = await workload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             properties);
 
@@ -47,7 +40,7 @@ public class CrudLifecycleTests
 
         AssertNoSoapFault(xml);
 
-        var createdItem = GetPart(xml);
+        var createdItem = GetItem(xml, "Part");
 
         Assert.NotNull(createdItem);
 
@@ -61,16 +54,12 @@ public class CrudLifecycleTests
     public async Task ReadWorkload_ShouldReturnParts()
     {
         // Arrange
-        using var httpClient = new HttpClient();
-        var arasClient = new ArasClient(httpClient, OAuthUrl, Database);
-
-        var token = await GetTokenAsync(arasClient);
-        var workload = new ReadWorkload(arasClient);
+        var workload = new ReadWorkload(_aras.Client);
 
         // Act
         var result = await workload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             select: "id,item_number,name");
 
@@ -93,21 +82,16 @@ public class CrudLifecycleTests
     public async Task UpdateWorkload_ShouldUpdatePartName()
     {
         // Arrange
-        using var httpClient = new HttpClient();
-        var arasClient = new ArasClient(httpClient, OAuthUrl, Database);
-
-        var token = await GetTokenAsync(arasClient);
-
-        var createWorkload = new CreateWorkload(arasClient);
-        var updateWorkload = new UpdateWorkload(arasClient);
-        var readWorkload = new ReadWorkload(arasClient);
+        var createWorkload = new CreateWorkload(_aras.Client);
+        var updateWorkload = new UpdateWorkload(_aras.Client);
+        var readWorkload = new ReadWorkload(_aras.Client);
 
         var itemNumber = GenerateItemNumber();
 
         // Step 1: Create a dedicated test Part
         var createResult = await createWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             new Dictionary<string, string>
             {
@@ -119,7 +103,7 @@ public class CrudLifecycleTests
 
         AssertNoSoapFault(createXml);
 
-        var createdItem = GetPart(createXml);
+        var createdItem = GetItem(createXml, "Part");
 
         Assert.NotNull(createdItem);
 
@@ -129,8 +113,8 @@ public class CrudLifecycleTests
 
         // Step 2: Update the Part
         var updateResult = await updateWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             originalId!,
             new Dictionary<string, string>
@@ -143,7 +127,7 @@ public class CrudLifecycleTests
         AssertNoSoapFault(updateXml);
 
         // Step 3: Extract the ID returned by Update
-        var updatedItem = GetPart(updateXml);
+        var updatedItem = GetItem(updateXml, "Part");
 
         Assert.NotNull(updatedItem);
 
@@ -151,10 +135,10 @@ public class CrudLifecycleTests
 
         Assert.False(string.IsNullOrWhiteSpace(updatedId));
 
-        // Step 4: Read the updated Part using its returned ID
+        // Step 4: Read the updated Part
         var readResult = await readWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             id: updatedId,
             select: "id,name");
@@ -164,7 +148,7 @@ public class CrudLifecycleTests
         AssertNoSoapFault(readXml);
 
         // Step 5: Verify the updated property
-        var part = GetPart(readXml);
+        var part = GetItem(readXml, "Part");
 
         Assert.NotNull(part);
 
@@ -173,64 +157,21 @@ public class CrudLifecycleTests
         Assert.Equal("After Update", actualName);
     }
 
-    // Generate a unique Part Number within the 32-character limit
-    private static string GenerateItemNumber()
-    {
-        return $"LIA-PROJECT-{Guid.NewGuid():N}"[..24];
-    }
-
-    // Acquire an OAuth access token
-    private static async Task<string> GetTokenAsync(ArasClient arasClient)
-    {
-        var username = Environment.GetEnvironmentVariable("ARAS_USERNAME");
-        var password = Environment.GetEnvironmentVariable("ARAS_PASSWORD");
-
-        Assert.False(string.IsNullOrWhiteSpace(username));
-        Assert.False(string.IsNullOrWhiteSpace(password));
-
-        return await arasClient.GetAccessTokenAsync(
-            username!,
-            password!);
-    }
-
-    // Find the first Part item in an Aras response
-    private static XElement? GetPart(XDocument xml)
-    {
-        return xml.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "Item" &&
-                (string?)e.Attribute("type") == "Part");
-    }
-
-    // Verify the response does not contain a SOAP Fault
-    private static void AssertNoSoapFault(XDocument xml)
-    {
-        var fault = xml.Descendants()
-            .FirstOrDefault(e => e.Name.LocalName == "Fault");
-
-        Assert.Null(fault);
-    }
-
     // Test 4: Create and Delete a Part
     [Fact]
     public async Task DeleteWorkload_ShouldDeletePart()
     {
         // Arrange
-        using var httpClient = new HttpClient();
-        var arasClient = new ArasClient(httpClient, OAuthUrl, Database);
-
-        var token = await GetTokenAsync(arasClient);
-
-        var createWorkload = new CreateWorkload(arasClient);
-        var deleteWorkload = new DeleteWorkload(arasClient);
-        var readWorkload = new ReadWorkload(arasClient);
+        var createWorkload = new CreateWorkload(_aras.Client);
+        var deleteWorkload = new DeleteWorkload(_aras.Client);
+        var readWorkload = new ReadWorkload(_aras.Client);
 
         var itemNumber = GenerateItemNumber();
 
         // Step 1: Create a test Part
         var createResult = await createWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             new Dictionary<string, string>
             {
@@ -239,83 +180,57 @@ public class CrudLifecycleTests
             });
 
         var createXml = XDocument.Parse(createResult);
+
         AssertNoSoapFault(createXml);
 
-        var createdItem = GetPart(createXml);
+        var createdItem = GetItem(createXml, "Part");
+
         Assert.NotNull(createdItem);
 
         var targetId = (string?)createdItem.Attribute("id");
+
         Assert.False(string.IsNullOrWhiteSpace(targetId));
 
         // Step 2: Delete the Part
         var deleteResult = await deleteWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             targetId!);
 
         var deleteXml = XDocument.Parse(deleteResult);
+
         AssertNoSoapFault(deleteXml);
 
-        
-        // Step 3: Verify that the deleted Part no longer exists
+        // Step 3: Verify deletion
         var readResult = await readWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             "Part",
             id: targetId);
 
-        var readXml = XDocument.Parse(readResult);
-
-        // Check for SOAP Fault
-        var fault = readXml.Descendants()
-            .FirstOrDefault(e => e.Name.LocalName == "Fault");
-
-        if (fault != null)
-        {
-            // Aras AML error code 0 means no items found
-            var faultCode = fault.Descendants()
-                .FirstOrDefault(e => e.Name.LocalName == "faultcode")?.Value
-                ?? fault.Elements()
-                    .FirstOrDefault(e => e.Name.LocalName == "faultcode")?.Value;
-
-            Assert.Equal("0", faultCode);
-        }
-        else
-        {
-            // No fault: the response must contain no matching Part
-            var remainingPart = readXml.Descendants()
-                .FirstOrDefault(e =>
-                    e.Name.LocalName == "Item" &&
-                    (string?)e.Attribute("type") == "Part" &&
-                    (string?)e.Attribute("id") == targetId);
-
-            Assert.Null(remainingPart);
-        }      
+        AssertItemMissing(readResult, "Part", targetId!);
     }
 
-    // Test 5: Verify full CRUD lifecycle on a second ItemType (Document)
+    // Test 5: Full CRUD lifecycle for Document
     [Fact]
     public async Task CrudLifecycle_ShouldWorkForDocumentItemType()
     {
         // Arrange
-        using var httpClient = new HttpClient();
-        var arasClient = new ArasClient(httpClient, OAuthUrl, Database);
-
-        var token = await GetTokenAsync(arasClient);
-
-        var createWorkload = new CreateWorkload(arasClient);
-        var updateWorkload = new UpdateWorkload(arasClient);
-        var readWorkload = new ReadWorkload(arasClient);
-        var deleteWorkload = new DeleteWorkload(arasClient);
+        var createWorkload = new CreateWorkload(_aras.Client);
+        var updateWorkload = new UpdateWorkload(_aras.Client);
+        var readWorkload = new ReadWorkload(_aras.Client);
+        var deleteWorkload = new DeleteWorkload(_aras.Client);
 
         const string itemType = "Document";
-        var docNumber = $"DOC-{Guid.NewGuid():N}"[..24];
 
-        // 1. Create Document
+        var docNumber =
+            $"DOC-{Guid.NewGuid():N}"[..24];
+
+        // Step 1: Create Document
         var createResult = await createWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             itemType,
             new Dictionary<string, string>
             {
@@ -325,21 +240,21 @@ public class CrudLifecycleTests
             });
 
         var createXml = XDocument.Parse(createResult);
+
         AssertNoSoapFault(createXml);
 
-        var createdItem = createXml.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "Item" &&
-                (string?)e.Attribute("type") == itemType);
+        var createdItem = GetItem(createXml, itemType);
 
         Assert.NotNull(createdItem);
+
         var docId = (string?)createdItem.Attribute("id");
+
         Assert.False(string.IsNullOrWhiteSpace(docId));
 
-        // 2. Update Document
+        // Step 2: Update Document
         var updateResult = await updateWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             itemType,
             docId!,
             new Dictionary<string, string>
@@ -348,61 +263,102 @@ public class CrudLifecycleTests
             });
 
         var updateXml = XDocument.Parse(updateResult);
+
         AssertNoSoapFault(updateXml);
 
-        var updatedItem = updateXml.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "Item" &&
-                (string?)e.Attribute("type") == itemType);
+        var updatedItem = GetItem(updateXml, itemType);
 
         Assert.NotNull(updatedItem);
-        var updatedId = (string?)updatedItem.Attribute("id") ?? docId;
 
-        // 3. Read Document and verify property update
+        var updatedId =
+            (string?)updatedItem.Attribute("id") ?? docId;
+
+        // Step 3: Read Document and verify update
         var readResult = await readWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             itemType,
             id: updatedId,
             select: "id,item_number,name");
 
         var readXml = XDocument.Parse(readResult);
+
         AssertNoSoapFault(readXml);
 
-        var docItem = readXml.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "Item" &&
-                (string?)e.Attribute("type") == itemType);
+        var docItem = GetItem(readXml, itemType);
 
         Assert.NotNull(docItem);
-        Assert.Equal("Updated Document Name", docItem.Element("name")?.Value);
 
-        // 4. Delete Document
+        Assert.Equal(
+            "Updated Document Name",
+            docItem.Element("name")?.Value);
+
+        // Step 4: Delete Document
         var deleteResult = await deleteWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             itemType,
-            updatedId);
+            updatedId!);
 
         var deleteXml = XDocument.Parse(deleteResult);
+
         AssertNoSoapFault(deleteXml);
 
-        
-        // 5. Verify Document is removed
+        // Step 5: Verify deletion
         var verifyResult = await readWorkload.ExecuteAsync(
-            ServerUrl,
-            token,
+            ArasFixture.ServerUrl,
+            _aras.AccessToken,
             itemType,
             id: updatedId);
 
-        var verifyXml = XDocument.Parse(verifyResult);
+        AssertItemMissing(
+            verifyResult,
+            itemType,
+            updatedId!);
+    }
 
-        var fault = verifyXml.Descendants()
-            .FirstOrDefault(e => e.Name.LocalName == "Fault");
+    // Generate a unique Part Number
+    private static string GenerateItemNumber()
+    {
+        return $"LIA-PROJECT-{Guid.NewGuid():N}"[..24];
+    }
+
+    // Find the first Item of the requested type
+    private static XElement? GetItem(
+        XDocument xml,
+        string itemType)
+    {
+        return xml.Descendants()
+            .FirstOrDefault(e =>
+                e.Name.LocalName == "Item" &&
+                (string?)e.Attribute("type") == itemType);
+    }
+
+    // Verify no SOAP Fault
+    private static void AssertNoSoapFault(XDocument xml)
+    {
+        var fault = xml.Descendants()
+            .FirstOrDefault(e =>
+                e.Name.LocalName == "Fault");
+
+        Assert.Null(fault);
+    }
+
+    // Verify the Item no longer exists in Aras
+    private static void AssertItemMissing(
+        string responseXml,
+        string itemType,
+        string itemId)
+    {
+        var xml = XDocument.Parse(responseXml);
+
+        var fault = xml.Descendants()
+            .FirstOrDefault(e =>
+                e.Name.LocalName == "Fault");
 
         if (fault != null)
         {
-            // Verify Aras returned the "no items found" code
+            // Aras faultcode 0: no items found
             var faultCode = fault.Descendants()
                 .FirstOrDefault(e =>
                     e.Name.LocalName == "faultcode")?.Value;
@@ -411,16 +367,13 @@ public class CrudLifecycleTests
         }
         else
         {
-            // Verify that the deleted Document is absent
-            var remainingDoc = verifyXml.Descendants()
+            var remainingItem = xml.Descendants()
                 .FirstOrDefault(e =>
                     e.Name.LocalName == "Item" &&
                     (string?)e.Attribute("type") == itemType &&
-                    (string?)e.Attribute("id") == updatedId);
+                    (string?)e.Attribute("id") == itemId);
 
-            Assert.Null(remainingDoc);
+            Assert.Null(remainingItem);
         }
-
     }
-
 }

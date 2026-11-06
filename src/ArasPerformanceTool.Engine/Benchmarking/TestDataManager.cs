@@ -9,8 +9,10 @@ namespace ArasPerformanceTool.Engine.Benchmarking;
 public class TestDataManager
 {
     private readonly CreateWorkload _createWorkload;
-    private readonly ReadWorkload _readWorkload;
-    private readonly DeleteWorkload _deleteWorkload;
+    private readonly TestDataCleanupService _cleanupService;
+
+
+   
 
     public TestDataManifest Manifest { get; }
 
@@ -21,8 +23,7 @@ public class TestDataManager
         ArgumentNullException.ThrowIfNull(arasClient);
 
         _createWorkload = new CreateWorkload(arasClient);
-        _readWorkload = new ReadWorkload(arasClient);
-        _deleteWorkload = new DeleteWorkload(arasClient);
+        _cleanupService = new TestDataCleanupService(arasClient);
 
         Manifest = manifest ?? new TestDataManifest();
     }
@@ -94,146 +95,47 @@ public class TestDataManager
     /// <summary>
     /// Deletes tracked records and retains failed items for retry.
     /// </summary>
+   
+    
     public async Task<CleanupResult> CleanupAsync(
         string serverUrl,
         string accessToken,
         string? targetItemType = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? expectedEnvironmentId = null)
     {
-        // Work from a snapshot of the current manifest
-        var itemsToDelete = Manifest.Items
-            .Where(x =>
-                targetItemType is null ||
-                string.Equals(
-                    x.ItemType,
-                    targetItemType,
-                    StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        var deletedCount = 0;
-        var alreadyMissingCount = 0;
-        var failedIds = new List<string>();
-
-        foreach (var item in itemsToDelete)
+        // Require the current connection's environment identity.
+        if (string.IsNullOrWhiteSpace(expectedEnvironmentId))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            try
-            {
-                // Step 1: Request deletion
-                var deleteResult = await _deleteWorkload.ExecuteAsync(
-                    serverUrl,
-                    accessToken,
-                    item.ItemType,
-                    item.Id,
-                    cancellationToken);
-
-                var deleteXml = XDocument.Parse(deleteResult);
-
-                // Check whether Aras reported that the item was missing
-                var deleteFault = GetFaultCode(deleteXml);
-
-                if (deleteFault != null && deleteFault != "0")
-                {
-                    failedIds.Add(item.Id);
-                    continue;
-                }
-
-                // Step 2: Verify the item can no longer be retrieved
-                var readResult = await _readWorkload.ExecuteAsync(
-                    serverUrl,
-                    accessToken,
-                    item.ItemType,
-                    id: item.Id,
-                    cancellationToken: cancellationToken);
-
-                var readXml = XDocument.Parse(readResult);
-
-                if (!IsItemMissing(readXml, item))
-                {
-                    failedIds.Add(item.Id);
-                    continue;
-                }
-
-                // Step 3: Remove only confirmed missing records
-                Manifest.Remove(item.ItemType, item.Id);
-
-                if (deleteFault == "0")
-                {
-                    // The item was already missing
-                    alreadyMissingCount++;
-                }
-                else
-                {
-                    // Delete was acknowledged and absence verified
-                    deletedCount++;
-                }
-            }
-            catch (OperationCanceledException)
-                when (cancellationToken.IsCancellationRequested)
-            {
-                // Do not hide intentional cancellation
-                throw;
-            }
-            catch (Exception)
-            {
-                // Keep failed records in the manifest for retry
-                failedIds.Add(item.Id);
-            }
+            throw new InvalidOperationException(
+                "Cleanup requires the current Aras EnvironmentId.");
         }
 
+        // Delegate deletion and verification to the shared service.
+        var result = await _cleanupService.CleanupAsync(
+            Manifest,
+            expectedEnvironmentId,
+            serverUrl,
+            accessToken,
+            targetItemType,
+            cancellationToken);
+
+        // Preserve the existing CleanupResult contract.
+        var failedIds = result.Items
+            .Where(item =>
+                item.FinalStatus == TrackedItemStatus.CleanupFailed)
+            .Select(item => item.ItemId)
+            .ToList();
+
         return new CleanupResult(
-            deletedCount,
-            alreadyMissingCount,
+            result.Deleted,
+            result.AlreadyMissing,
             failedIds);
     }
 
-    // Return the SOAP Fault code, if a Fault exists
-    private static string? GetFaultCode(XDocument xml)
-    {
-        var fault = xml.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "Fault");
 
-        if (fault is null)
-        {
-            return null;
-        }
 
-        return fault.Descendants()
-            .FirstOrDefault(e =>
-                e.Name.LocalName == "faultcode")?.Value
-            ?? fault.Elements()
-                .FirstOrDefault(e =>
-                    e.Name.LocalName == "faultcode")?.Value
-            ?? string.Empty;
-    }
 
-    // Verify a tracked item is no longer returned by Aras
-    private static bool IsItemMissing(
-        XDocument xml,
-        TrackedItem item)
-    {
-        var faultCode = GetFaultCode(xml);
-
-        // Only the known "no items found" code is acceptable
-        if (faultCode != null)
-        {
-            return faultCode == "0";
-        }
-
-        // A successful query must not return the target record
-        return !xml.Descendants().Any(e =>
-            e.Name.LocalName == "Item" &&
-            string.Equals(
-                (string?)e.Attribute("type"),
-                item.ItemType,
-                StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(
-                (string?)e.Attribute("id"),
-                item.Id,
-                StringComparison.OrdinalIgnoreCase));
-    }
 
     // Default test properties for standard Part and Document
     private Dictionary<string, string> DefaultPropertyFactory(
