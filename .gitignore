@@ -25,3 +25,7 @@ TestResults/
 
 # Local IDE settings
 *.csproj.user
+
+
+# Local runtime data
+LocalData/

@@ -10,6 +10,7 @@ using ArasPerformanceTool.Engine.Storage;
 using Microsoft.AspNetCore.Mvc;
 using ArasPerformanceTool.Engine.Services;
 using ArasPerformanceTool.Engine.Models;
+using Microsoft.AspNetCore.Hosting;
 
 namespace ArasPerformanceTool.Api.Controllers;
 
@@ -27,20 +28,23 @@ public class BenchmarkController : ControllerBase
     private readonly IConfiguration _configuration;
     private readonly ILogger<BenchmarkController> _logger;
 
+    private readonly IWebHostEnvironment _environment;
+
     public BenchmarkController(
         IArasClient arasClient,
         FileResultStore fileResultStore,
         IConfiguration configuration,
         ILogger<BenchmarkController> logger,
-        CustomAmlBenchmarkService customAmlBenchmarkService)
+        CustomAmlBenchmarkService customAmlBenchmarkService,
+        IWebHostEnvironment environment)
     {
         _arasClient = arasClient;
         _fileResultStore = fileResultStore;
         _configuration = configuration;
         _logger = logger;
         _customAmlBenchmarkService = customAmlBenchmarkService;
+        _environment = environment;
     }
-
     /// <summary>
     /// Runs a standard CRUD or custom read-only AML benchmark.
     /// </summary>
@@ -188,15 +192,15 @@ public async Task<IActionResult> StartBenchmark(
                 });
             }
         }
-    }
-    catch (Exception ex) when (
-        ex is ArgumentException or XmlException)
-    {
-        return BadRequest(new
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or XmlException)
         {
-            Message = ex.Message
-        });
-    }
+            return BadRequest(new
+            {
+                Message = ex.Message
+            });
+        }
 
    
 
@@ -301,12 +305,38 @@ public async Task<IActionResult> StartBenchmark(
                 // 5. Standard CRUD Benchmark
                 // =============================================
 
-               var manifest = new TestDataManifest(
-                    environmentId: environmentId);
+               
+                // Read the data directory from configuration.
+                var dataDirectory = _configuration["Storage:DataDirectory"]
+                    ?? throw new InvalidOperationException(
+                        "Storage data directory is not configured.");
+
+                // Resolve relative paths from the API content root.
+                var dataRoot = Path.IsPathRooted(dataDirectory)
+                    ? Path.GetFullPath(dataDirectory)
+                    : Path.GetFullPath(Path.Combine(
+                        _environment.ContentRootPath,
+                        dataDirectory));
+
+                // Create the persistent manifest directory.
+                var manifestDirectory = Path.Combine(
+                    dataRoot,
+                    "manifests");
+
+                Directory.CreateDirectory(manifestDirectory);
+
+                var manifestPath = Path.Combine(
+                    manifestDirectory,
+                    $"{jobId:N}.json");
+
+                var manifest = new TestDataManifest(
+                    environmentId: environmentId,
+                    filePath: manifestPath);
 
                 var dataManager = new TestDataManager(
                     _arasClient,
                     manifest);
+
 
                 var createWorkload =
                     new CreateWorkload(_arasClient);
@@ -929,6 +959,75 @@ public async Task<IActionResult> StartBenchmark(
 
         return Ok(response);
     }
+
+    /// <summary>
+    /// Retrieves benchmark runs with unresolved test data.
+    /// Read-only; does not perform cleanup.
+    /// </summary>
+    
+    [HttpGet("pending-cleanup")]
+    public ActionResult GetPendingCleanupRuns()
+    {
+        var serverUrl = _configuration["Aras:ServerUrl"];
+        var database = _configuration["Aras:Database"];
+
+        if (string.IsNullOrWhiteSpace(serverUrl) ||
+            string.IsNullOrWhiteSpace(database))
+        {
+            return StatusCode(
+                500,
+                new { error = "Aras environment is not configured." });
+        }
+
+        var environmentId =
+            $"{serverUrl.TrimEnd('/')}|{database}";
+
+        var dataDirectory = _configuration["Storage:DataDirectory"];
+
+        if (string.IsNullOrWhiteSpace(dataDirectory))
+        {
+            return StatusCode(
+                500,
+                new { error = "Storage data directory is not configured." });
+        }
+
+        var dataRoot = Path.IsPathRooted(dataDirectory)
+            ? Path.GetFullPath(dataDirectory)
+            : Path.GetFullPath(Path.Combine(
+                _environment.ContentRootPath,
+                dataDirectory));
+
+        var manifestDirectory = Path.Combine(
+            dataRoot,
+            "manifests");
+
+        var store = new TestDataManifestStore(
+            manifestDirectory);
+
+        var result = store.Scan(environmentId);
+
+        // Do not expose local ManifestPath to API clients.
+        var pendingRuns = result.PendingRuns.Select(run => new
+        {
+            run.RunId,
+            run.EnvironmentId,
+            run.CreatedAtUtc,
+            run.RemainingCount
+        }).ToList();
+
+        var errors = result.Errors.Select(error => new
+        {
+            FileName = Path.GetFileName(error.ManifestPath),
+            Message = "Manifest could not be loaded."
+        }).ToList();
+
+        return Ok(new
+        {
+            PendingRuns = pendingRuns,
+            Errors = errors
+        });
+    }
+
 
     /// <summary>
     /// Retrieves all benchmark results stored in memory.

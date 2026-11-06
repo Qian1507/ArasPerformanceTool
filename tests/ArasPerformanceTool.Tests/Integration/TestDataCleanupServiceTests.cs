@@ -125,4 +125,126 @@ public sealed class TestDataCleanupServiceTests
 
         Assert.Empty(manifest.UnresolvedItems);
     }
+
+    
+    [Fact]
+    public async Task CleanupAsync_ShouldContinue_WhenOneItemFails()
+    {
+        // Arrange: shared Aras connection.
+        var manifest = new TestDataManifest(
+            environmentId: ArasFixture.EnvironmentId);
+
+        var cleanupService =
+            new TestDataCleanupService(_aras.Client);
+
+        string? createdPartId = null;
+
+        try
+        {
+            // 1. Register an invalid ItemType.
+            // This should cause a real Aras error, not "no items found".
+            var invalidId = Guid.NewGuid()
+                .ToString("N")
+                .ToUpperInvariant();
+
+            manifest.Track(
+                "LIA_NONEXISTENT_ITEMTYPE_999",
+                invalidId);
+
+            // 2. Create a real test Part.
+            var itemNumber =
+                $"LIA-FAILTEST-{Guid.NewGuid():N}"[..24];
+
+            var createResponse = await _aras.CreateItemAsync(
+                "Part",
+                new Dictionary<string, string>
+                {
+                    ["item_number"] = itemNumber,
+                    ["name"] = "Cleanup Failure Test"
+                });
+
+            var xml = XDocument.Parse(createResponse);
+
+            var createdItem = xml.Descendants()
+                .FirstOrDefault(x =>
+                    x.Name.LocalName == "Item" &&
+                    (string?)x.Attribute("type") == "Part");
+
+            Assert.NotNull(createdItem);
+
+            createdPartId =
+                (string?)createdItem.Attribute("id");
+
+            Assert.False(
+                string.IsNullOrWhiteSpace(createdPartId));
+
+            manifest.Track("Part", createdPartId!);
+
+            // Act: cleanup both items in one run.
+            var result = await cleanupService.CleanupAsync(
+                manifest,
+                ArasFixture.EnvironmentId,
+                ArasFixture.ServerUrl,
+                _aras.AccessToken);
+
+            // Assert: the invalid item failed.
+            Assert.Equal(2, result.Found);
+            Assert.Equal(1, result.Failed);
+            Assert.Equal(1, result.Deleted);
+            Assert.Equal(0, result.AlreadyMissing);
+            Assert.Equal(1, result.Remaining);
+
+            var failedItem = Assert.Single(
+                manifest.Items,
+                x => x.ItemType == "LIA_NONEXISTENT_ITEMTYPE_999");
+
+            Assert.Equal(
+                TrackedItemStatus.CleanupFailed,
+                failedItem.Status);
+
+            Assert.False(
+                string.IsNullOrWhiteSpace(failedItem.LastError));
+
+            // Assert: the real Part was deleted despite the first failure.
+          var deletedItem = Assert.Single(
+                manifest.Items,
+                x => x.ItemType == "Part");
+
+            Assert.Equal(createdPartId, deletedItem.Id);
+
+            Assert.Equal(
+                TrackedItemStatus.Deleted,
+                deletedItem.Status);
+
+            // Only the failed item remains unresolved.
+            var unresolved = Assert.Single(
+                manifest.UnresolvedItems);
+
+            Assert.Equal(invalidId, unresolved.Id);
+        }
+        finally
+        {
+            // Safety fallback for the real test Part.
+            // Never attempt to delete the invalid/fake item here.
+            if (!string.IsNullOrWhiteSpace(createdPartId) &&
+                manifest.UnresolvedItems.Any(x =>
+                    x.ItemType == "Part" &&
+                    x.Id == createdPartId))
+            {
+                try
+                {
+                    await _aras.DeleteItemAsync(
+                        "Part",
+                        createdPartId);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(
+                        $"Test Part cleanup requires attention: " +
+                        $"{createdPartId}. {ex.Message}");
+                }
+            }
+        }
+    }
+
 }
