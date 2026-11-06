@@ -2,6 +2,7 @@
 using System.Xml.Linq;
 using ArasPerformanceTool.Engine.Aras;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
+using ArasPerformanceTool.Engine.Models;
 
 namespace ArasPerformanceTool.Engine.Benchmarking;
 
@@ -250,8 +251,3 @@ public class TestDataManager
     }
 }
 
-// Summary of a cleanup operation
-public sealed record CleanupResult(
-    int DeletedCount,
-    int AlreadyMissingCount,
-    IReadOnlyList<string> FailedIds);

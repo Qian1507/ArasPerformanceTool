@@ -27,4 +27,6 @@ public class StartBenchmarkRequest
     public int Concurrency { get; set; } = 1;
 
     public string? WorkloadName { get; set; }
+    
+    
 }

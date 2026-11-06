@@ -1,7 +1,8 @@
-
+using ArasPerformanceTool.Engine.Services;
 using ArasPerformanceTool.Engine.Aras;
 using ArasPerformanceTool.Engine.Storage;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
+using ArasPerformanceTool.Engine.Benchmarking;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -36,6 +37,14 @@ builder.Services.AddTransient<IArasClient>(sp =>
         oauthUrl,
         database);
 });
+
+// Register benchmark orchestration services
+builder.Services.AddScoped<StandardBenchmarkService>();
+builder.Services.AddScoped<CustomAmlBenchmarkService>();
+
+// Register test data manager for dependency injection
+builder.Services.AddScoped<TestDataManager>();
+
 
 // Register CRUD workloads
 builder.Services.AddTransient<CreateWorkload>();

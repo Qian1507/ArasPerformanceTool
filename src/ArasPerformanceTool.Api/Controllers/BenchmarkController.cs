@@ -8,6 +8,8 @@ using ArasPerformanceTool.Engine.Benchmarking;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
 using ArasPerformanceTool.Engine.Storage;
 using Microsoft.AspNetCore.Mvc;
+using ArasPerformanceTool.Engine.Services;
+using ArasPerformanceTool.Engine.Models;
 
 namespace ArasPerformanceTool.Api.Controllers;
 
@@ -20,6 +22,7 @@ public class BenchmarkController : ControllerBase
         Jobs = new();
 
     private readonly IArasClient _arasClient;
+    private readonly CustomAmlBenchmarkService _customAmlBenchmarkService;
     private readonly FileResultStore _fileResultStore;
     private readonly IConfiguration _configuration;
     private readonly ILogger<BenchmarkController> _logger;
@@ -28,12 +31,14 @@ public class BenchmarkController : ControllerBase
         IArasClient arasClient,
         FileResultStore fileResultStore,
         IConfiguration configuration,
-        ILogger<BenchmarkController> logger)
+        ILogger<BenchmarkController> logger,
+        CustomAmlBenchmarkService customAmlBenchmarkService)
     {
         _arasClient = arasClient;
         _fileResultStore = fileResultStore;
         _configuration = configuration;
         _logger = logger;
+        _customAmlBenchmarkService = customAmlBenchmarkService;
     }
 
     /// <summary>
@@ -47,113 +52,153 @@ public class BenchmarkController : ControllerBase
     [ProducesResponseType(
         typeof(BenchmarkStatusResponse),
         StatusCodes.Status500InternalServerError)]
-    public async Task<IActionResult> StartBenchmark(
-        [FromBody] StartBenchmarkRequest request)
+   
+public async Task<IActionResult> StartBenchmark(
+    [FromBody] StartBenchmarkRequest request)
+{
+    var isRawAml = !string.IsNullOrWhiteSpace(request.Aml);
+
+    string itemType;
+    string action;
+
+    // =====================================================
+    // 1. Validate Request
+    // =====================================================
+
+    try
     {
-        var isRawAml = !string.IsNullOrWhiteSpace(request.Aml);
-
-        string itemType;
-        string action;
-        string? executableAml = null;
-
-        // =====================================================
-        // 1. Validate Request
-        // =====================================================
-
-        try
+        if (isRawAml)
         {
-            if (isRawAml)
+            // =============================================
+            // Custom AML: Single AML Input
+            // =============================================
+
+            var rawAml = request.Aml!;
+
+            // Parse the top-level ItemType and action.
+            // Execution safety is validated by
+            // CustomAmlBenchmarkService.
+            var metadata = AmlParser.ParseMetadata(rawAml);
+
+            itemType = metadata.ItemType;
+            action = metadata.Action;
+
+            if (string.IsNullOrWhiteSpace(itemType))
             {
-                var rawAml = request.Aml!;
-
-                // Custom AML supports read-only operations only.
-                AmlParser.ValidateReadOnlyAml(rawAml);
-
-                // Do not modify queries between iterations.
-                if (rawAml.Contains("${UNIQUE}") ||
-                    rawAml.Contains("${INDEX}"))
+                return BadRequest(new
                 {
-                    return BadRequest(new
-                    {
-                        Message =
-                            "Dynamic placeholders are not supported in read-only AML benchmarks."
-                    });
-                }
-
-                var metadata = AmlParser.ParseMetadata(rawAml);
-
-                itemType = metadata.ItemType;
-                action = metadata.Action;
-
-                if (!string.IsNullOrWhiteSpace(request.ItemType) &&
-                    !string.Equals(
-                        request.ItemType,
-                        itemType,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    return BadRequest(new
-                    {
-                        Message = "ItemType does not match the AML payload."
-                    });
-                }
-
-                if (!string.IsNullOrWhiteSpace(request.Action) &&
-                    !string.Equals(
-                        request.Action,
-                        action,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    return BadRequest(new
-                    {
-                        Message = "Action does not match the AML payload."
-                    });
-                }
-
-                executableAml = AmlParser.PrepareExecutableAml(
-                    rawAml,
-                    0);
+                    Message = "Custom AML must specify an ItemType."
+                });
             }
-            else
+
+            var supportedAmlActions = new[]
             {
-                itemType = request.ItemType ?? "Part";
-                action = request.Action ?? "Create";
+                "add",
+                "get",
+                "edit",
+                "delete"
+            };
 
-                if (itemType is not ("Part" or "Document"))
+            if (!supportedAmlActions.Contains(
+                action,
+                StringComparer.OrdinalIgnoreCase))
+            {
+                return BadRequest(new
                 {
-                    return BadRequest(new
-                    {
-                        Message =
-                            "Standard mode currently supports Part and Document only."
-                    });
-                }
+                    Message = "Custom AML supports add, get, edit and delete."
+                });
+            }
 
-                var supportedActions = new[]
+            // Validate ItemType only if explicitly supplied.
+            if (!string.IsNullOrWhiteSpace(request.ItemType) &&
+                !string.Equals(
+                    request.ItemType,
+                    itemType,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest(new
                 {
-                    "Create",
-                    "Read",
-                    "Update",
-                    "Delete"
-                };
+                    Message = "ItemType does not match the AML payload."
+                });
+            }
 
-                if (!supportedActions.Contains(
+            // Accept either AML action names or CRUD labels.
+            var normalizedAction = action.ToLowerInvariant() switch
+            {
+                "add" => "Create",
+                "get" => "Read",
+                "edit" => "Update",
+                "delete" => "Delete",
+                _ => action
+            };
+
+            if (!string.IsNullOrWhiteSpace(request.Action) &&
+                !string.Equals(
+                    request.Action,
                     action,
-                    StringComparer.OrdinalIgnoreCase))
+                    StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(
+                    request.Action,
+                    normalizedAction,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest(new
                 {
-                    return BadRequest(new
-                    {
-                        Message = "Unsupported CRUD operation."
-                    });
-                }
+                    Message = "Action does not match the AML payload."
+                });
+            }
+
+            // Do not execute AML here.
+            // CustomAmlBenchmarkService handles validation,
+            // macros, execution, tracking and cleanup.
+        }
+        else
+        {
+            // =============================================
+            // Standard CRUD: Existing Behavior
+            // =============================================
+
+            itemType = request.ItemType ?? "Part";
+            action = request.Action ?? "Create";
+
+            if (itemType is not ("Part" or "Document"))
+            {
+                return BadRequest(new
+                {
+                    Message =
+                        "Standard mode currently supports Part and Document only."
+                });
+            }
+
+            var supportedActions = new[]
+            {
+                "Create",
+                "Read",
+                "Update",
+                "Delete"
+            };
+
+            if (!supportedActions.Contains(
+                action,
+                StringComparer.OrdinalIgnoreCase))
+            {
+                return BadRequest(new
+                {
+                    Message = "Unsupported CRUD operation."
+                });
             }
         }
-        catch (Exception ex) when (
-            ex is ArgumentException or XmlException)
+    }
+    catch (Exception ex) when (
+        ex is ArgumentException or XmlException)
+    {
+        return BadRequest(new
         {
-            return BadRequest(new
-            {
-                Message = ex.Message
-            });
-        }
+            Message = ex.Message
+        });
+    }
+
+   
 
         // =====================================================
         // 2. Initialize Benchmark
@@ -198,6 +243,8 @@ public class BenchmarkController : ControllerBase
             var token = await _arasClient.GetAccessTokenAsync(
                 username,
                 password);
+            
+           
 
             var runner = new BenchmarkRunner();
 
@@ -207,38 +254,36 @@ public class BenchmarkController : ControllerBase
                 request.Concurrency);
 
             // =================================================
-            // 4. Custom AML Benchmark
+            // 4. Custom AML Benchmark 
             // =================================================
 
             if (isRawAml)
             {
-                // Capture one successful response during benchmark execution.
-                // Do not send an additional AML request for result inspection.
-                string? sampleResponseXml = null;
+                var customResult =
+                    await _customAmlBenchmarkService.RunAsync(
+                        request.Aml!,
+                        workloadName,
+                        config,
+                        serverUrl,
+                        token);
 
-                report = await runner.RunAsync(
-                    workloadName,
-                    config,
-                    async _ =>
-                    {
-                        var responseXml = await _arasClient.ExecuteAmlAsync(
-                            serverUrl,
-                            token,
-                            executableAml!);
+                // Reuse the existing benchmark report and statistics.
+                report = customResult.Report;
 
-                        // Keep only the first successful response.
-                        // Safe when multiple iterations run concurrently.
-                        Interlocked.CompareExchange(
-                            ref sampleResponseXml,
-                            responseXml,
-                            null);
-                    });
-
-                // Prepare the sample outside benchmark timing.
-                if (!string.IsNullOrWhiteSpace(sampleResponseXml))
+                // Preserve the response for AML Query Result Details.
+                if (!string.IsNullOrWhiteSpace(
+                    customResult.SampleResponseXml))
                 {
                     queryResult = new AmlQueryResult(
-                        ResponseXml: sampleResponseXml);
+                        ResponseXml: customResult.SampleResponseXml);
+                }
+
+                // Cleanup failure must not be treated as success.
+                if (!string.IsNullOrWhiteSpace(
+                    customResult.CleanupError))
+                {
+                    status = BenchmarkStatus.Failed;
+                    errorMessage = customResult.CleanupError;
                 }
             }
             else
@@ -762,6 +807,7 @@ public class BenchmarkController : ControllerBase
 
             statistics = report.Statistics;
 
+            
             if (statistics.FailureCount > 0)
             {
                 status = BenchmarkStatus.Failed;
@@ -770,16 +816,24 @@ public class BenchmarkController : ControllerBase
                 var firstError = report.RawMeasurements
                     .Where(m => !m.IsSuccess)
                     .Select(m => m.ErrorMessage)
-                    .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message));
+                    .FirstOrDefault(message =>
+                        !string.IsNullOrWhiteSpace(message));
 
-                errorMessage =
+                // Build the benchmark error message.
+                var benchmarkError =
                     $"{statistics.FailureCount} benchmark operations failed.";
 
                 if (!string.IsNullOrWhiteSpace(firstError))
                 {
-                    errorMessage += $" Reason: {firstError}";
+                    benchmarkError += $" Reason: {firstError}";
                 }
+
+                // Preserve any existing cleanup error.
+                errorMessage = string.IsNullOrWhiteSpace(errorMessage)
+                    ? benchmarkError
+                    : $"{errorMessage} {benchmarkError}";
             }
+
 
             if (verification?.IsVerified == false)
             {

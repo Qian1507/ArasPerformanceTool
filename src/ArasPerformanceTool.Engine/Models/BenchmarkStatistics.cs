@@ -1,4 +1,4 @@
-namespace ArasPerformanceTool.Engine.Benchmarking;
+using ArasPerformanceTool.Engine.Models;
 
 /// <summary>
 /// Represents aggregated performance and reliability metrics for a benchmark execution.

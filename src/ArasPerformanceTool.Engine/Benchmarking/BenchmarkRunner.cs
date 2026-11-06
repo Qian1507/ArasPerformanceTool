@@ -3,16 +3,8 @@ using System.Diagnostics;
 
 namespace ArasPerformanceTool.Engine.Benchmarking;
 
-public sealed record BenchmarkConfiguration(
-    string ItemType,
-    int Iterations,
-    int Concurrency = 1);
 
-public sealed record BenchmarkReport(
-    string WorkloadName,
-    BenchmarkConfiguration Configuration,
-    BenchmarkStatistics Statistics,
-    IReadOnlyList<OperationMeasurement> RawMeasurements);
+
 
 public class BenchmarkRunner
 {

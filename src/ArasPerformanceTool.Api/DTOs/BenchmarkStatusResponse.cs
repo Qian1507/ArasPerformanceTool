@@ -1,5 +1,8 @@
-
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using ArasPerformanceTool.Engine.Benchmarking;
+using ArasPerformanceTool.Engine.Models;
 
 namespace ArasPerformanceTool.Api.DTOs;
 
@@ -79,4 +82,5 @@ public sealed record BenchmarkStatusResponse(
     BenchmarkStatistics? Statistics,
     string? ErrorMessage,
     CrudVerification? Verification = null,
-    AmlQueryResult? QueryResult = null);
+    AmlQueryResult? QueryResult = null,
+    CustomAmlCrudResult? ManagedCrudResult = null);
