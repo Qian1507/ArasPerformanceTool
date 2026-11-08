@@ -439,6 +439,185 @@ public sealed class TestDataCleanupServiceTests
         }
     }
 
+    
+    [Fact]
+    public async Task CleanupAsync_WhenReloadedAfterFailure_DeletesRemainingItems()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "ArasCleanupTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        var runId = Guid.NewGuid().ToString("N");
+        var manifestPath = Path.Combine(directory, $"{runId}.json");
+
+        string? createdPartId = null;
+        bool testPassed = false;
+
+        try
+        {
+            var manifest = new TestDataManifest(
+                environmentId: ArasFixture.EnvironmentId,
+                filePath: manifestPath,
+                runId: runId);
+
+            var itemNumber =
+                $"LIA-RETRY-{Guid.NewGuid():N}"[..24];
+
+            var createResponse = await _aras.CreateItemAsync(
+                "Part",
+                new Dictionary<string, string>
+                {
+                    ["item_number"] = itemNumber,
+                    ["name"] = "Cleanup Recovery Retry Test"
+                });
+
+            var xml = XDocument.Parse(createResponse);
+
+            var createdItem = xml.Descendants()
+                .FirstOrDefault(x =>
+                    x.Name.LocalName == "Item" &&
+                    (string?)x.Attribute("type") == "Part");
+
+            Assert.NotNull(createdItem);
+
+            createdPartId = (string?)createdItem.Attribute("id");
+            Assert.False(string.IsNullOrWhiteSpace(createdPartId));
+
+            manifest.Track("Part", createdPartId!);
+
+            // Simulate an interrupted cleanup using
+            // a pre-cancelled cancellation token.
+            using var cancelledCts = new CancellationTokenSource();
+            cancelledCts.Cancel();
+
+            var cleanupService =
+                new TestDataCleanupService(_aras.Client);
+
+            try
+            {
+                await cleanupService.CleanupAsync(
+                    manifest,
+                    ArasFixture.EnvironmentId,
+                    ArasFixture.ServerUrl,
+                    _aras.AccessToken,
+                    cancellationToken: cancelledCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected if cancellation propagates.
+            }
+
+            // Simulate process restart by reloading from disk.
+            var reloaded = TestDataManifest.Load(
+                manifestPath,
+                ArasFixture.EnvironmentId);
+
+            Assert.Single(reloaded.UnresolvedItems);
+
+            // Retry cleanup with a fresh cancellation token.
+            var retryResult = await cleanupService.CleanupAsync(
+                reloaded,
+                ArasFixture.EnvironmentId,
+                ArasFixture.ServerUrl,
+                _aras.AccessToken);
+
+            var diagnostics = string.Join(
+                Environment.NewLine,
+                retryResult.Items.Select(item =>
+                    $"{item.ItemType}/{item.ItemId}: " +
+                    $"{item.FinalStatus}; {item.ErrorMessage}"));
+
+            Assert.True(
+                retryResult.Failed == 0,
+                diagnostics);
+
+            Assert.True(
+                retryResult.Remaining == 0,
+                diagnostics);
+
+            Assert.True(
+                retryResult.Deleted == 1 ||
+                retryResult.AlreadyMissing == 1,
+                diagnostics);
+
+            // Verify the final persisted state.
+            var finalManifest = TestDataManifest.Load(
+                manifestPath,
+                ArasFixture.EnvironmentId);
+
+            Assert.Empty(finalManifest.UnresolvedItems);
+
+            var tracked = Assert.Single(finalManifest.Items);
+
+            Assert.Contains(
+                tracked.Status,
+                new[]
+                {
+                    TrackedItemStatus.Deleted,
+                    TrackedItemStatus.AlreadyMissing
+                });
+
+            testPassed = true;
+        }
+        finally
+        {
+            // Safety fallback for real Aras test data.
+            if (!string.IsNullOrWhiteSpace(createdPartId))
+            {
+                try
+                {
+                    var existing = await _aras.GetItemAsync(
+                        "Part",
+                        createdPartId);
+
+                    if (!string.IsNullOrWhiteSpace(existing))
+                    {
+                        var existingXml = XDocument.Parse(existing);
+
+                        var exists = existingXml.Descendants().Any(x =>
+                            x.Name.LocalName == "Item" &&
+                            string.Equals(
+                                (string?)x.Attribute("type"),
+                                "Part",
+                                StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(
+                                (string?)x.Attribute("id"),
+                                createdPartId,
+                                StringComparison.OrdinalIgnoreCase));
+
+                        if (exists)
+                        {
+                            await _aras.DeleteItemAsync(
+                                "Part",
+                                createdPartId);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(
+                        $"Safety cleanup failed for {createdPartId}: {ex.Message}");
+                }
+            }
+
+            if (testPassed)
+            {
+                if (Directory.Exists(directory))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            else
+            {
+                Console.WriteLine(
+                   $"Recovery test failed. Manifest retained: {manifestPath}; " +
+                   $"CreatedPartId: {createdPartId}");
+            }
+        }
+    }
 
 
 }

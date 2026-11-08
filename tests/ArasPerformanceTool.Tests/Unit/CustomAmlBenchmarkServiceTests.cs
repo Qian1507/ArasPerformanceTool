@@ -244,4 +244,130 @@ public sealed class CustomAmlBenchmarkServiceTests
         }
     }
 
+    
+    [Fact]
+    public async Task RunAsync_WhenCleanupFails_PersistsRunForRecovery()
+    {
+        // Arrange
+        var runId = Guid.NewGuid().ToString("N");
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "ArasPerformanceToolTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            const string createdId =
+                "11111111111111111111111111111111";
+
+            var arasClient = new Mock<IArasClient>();
+
+            arasClient
+                .Setup(client => client.ExecuteAmlAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    string server,
+                    string token,
+                    string aml,
+                    CancellationToken ct) =>
+                {
+                    if (aml.Contains("action=\"add\""))
+                    {
+                        return $"""
+                            <AML>
+                            <Item type="Part" id="{createdId}" action="add" />
+                            </AML>
+                            """;
+                    }
+
+                    throw new InvalidOperationException(
+                        "Simulated cleanup failure.");
+                });
+
+            var service = new CustomAmlBenchmarkService(
+                arasClient.Object);
+
+            var config = new BenchmarkConfiguration(
+                "Part",
+                1,
+                1);
+
+            // Act
+            var result = await service.RunAsync(
+                AddAml,
+                "aml-add-cleanup-failure",
+                config,
+                ServerUrl,
+                AccessToken,
+                EnvironmentId,
+                runId,
+                directory);
+
+            // Assert: The manifest must remain on disk.
+            var manifestPath = Path.Combine(
+                directory,
+                $"{runId}.json");
+
+            Assert.True(File.Exists(manifestPath));
+
+            // Reopen from disk, as if the application restarted.
+            var reloaded = TestDataManifest.Load(
+                manifestPath,
+                EnvironmentId);
+
+            Assert.Equal(runId, reloaded.RunId);
+
+            var unresolvedItem = Assert.Single(
+                reloaded.UnresolvedItems);
+
+            Assert.Equal("Part", unresolvedItem.ItemType);
+            Assert.Equal(createdId, unresolvedItem.Id);
+            Assert.Equal(
+                TrackedItemStatus.CleanupFailed,
+                unresolvedItem.Status);
+
+            Assert.Equal(
+                TestItemSource.CustomAml,
+                unresolvedItem.Source);
+
+            Assert.Contains(
+                "Simulated cleanup failure.",
+                unresolvedItem.LastError ?? string.Empty);
+
+            // Recovery scanning must discover this run.
+            var store = new TestDataManifestStore(directory);
+
+            var scan = store.Scan(EnvironmentId);
+
+            var pending = Assert.Single(scan.PendingRuns);
+
+            Assert.Equal(runId, pending.RunId);
+            Assert.Equal(1, pending.RemainingCount);
+            Assert.Empty(scan.Errors);
+
+            // Preserve the benchmark report and report cleanup failure.
+            Assert.Equal(runId, result.RunId);
+            Assert.NotNull(result.Report);
+            Assert.NotNull(result.CleanupSummary);
+
+            Assert.Contains(
+                createdId,
+                result.CleanupSummary!.FailedIds);
+
+            Assert.False(
+                string.IsNullOrWhiteSpace(result.CleanupError));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+
 }

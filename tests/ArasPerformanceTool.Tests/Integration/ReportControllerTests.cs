@@ -29,7 +29,15 @@ public class ReportControllerTests : IClassFixture<WebApplicationFactory<Program
         };
 
         var postResponse = await _client.PostAsJsonAsync("/api/benchmark", request);
-        Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+        //Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+       var postResponseBody =
+            await postResponse.Content.ReadAsStringAsync();
+
+        Assert.True(
+            postResponse.StatusCode == HttpStatusCode.OK,
+            $"Expected HTTP 200, got {(int)postResponse.StatusCode} " +
+            $"({postResponse.StatusCode}).{Environment.NewLine}" +
+            $"Response body:{Environment.NewLine}{postResponseBody}");
 
         var benchmarkResult = await postResponse.Content.ReadFromJsonAsync<BenchmarkStatusResponse>();
         Assert.NotNull(benchmarkResult);
