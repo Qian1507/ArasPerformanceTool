@@ -342,7 +342,8 @@ public async Task<IActionResult> StartBenchmark(
 
                 var manifest = new TestDataManifest(
                     environmentId: environmentId,
-                    filePath: manifestPath);
+                    filePath: manifestPath,
+                    runId: jobId.ToString("N"));
 
                 var dataManager = new TestDataManager(
                     _arasClient,

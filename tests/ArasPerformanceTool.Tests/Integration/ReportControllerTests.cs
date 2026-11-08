@@ -6,6 +6,7 @@ using Xunit;
 
 namespace ArasPerformanceTool.Tests.Integration;
 
+[Collection("Aras Integration")]
 public class ReportControllerTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly HttpClient _client;

@@ -165,4 +165,83 @@ public sealed class CustomAmlBenchmarkServiceTests
         }
     }
 
+    [Fact]
+    public async Task RunAsync_WhenRunIdIsInvalid_ThrowsBeforeCallingAras()
+    {
+        var arasClient = new Mock<IArasClient>();
+        var service = new CustomAmlBenchmarkService(arasClient.Object);
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => service.RunAsync(
+                AddAml,
+                "aml-add",
+                new BenchmarkConfiguration("Part", 1, 1),
+                ServerUrl,
+                AccessToken,
+                EnvironmentId,
+                "../invalid-run-id",
+                manifestDirectory: Path.GetTempPath()));
+
+        arasClient.Verify(
+            client => client.ExecuteAmlAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenManifestExists_DoesNotOverwrite()
+    {
+        var runId = Guid.NewGuid().ToString("N");
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "ArasPerformanceToolTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var manifestPath = Path.Combine(
+                directory,
+                $"{runId}.json");
+
+            const string originalContent = "existing manifest";
+
+            File.WriteAllText(manifestPath, originalContent);
+
+            var arasClient = new Mock<IArasClient>();
+            var service = new CustomAmlBenchmarkService(arasClient.Object);
+
+            await Assert.ThrowsAsync<IOException>(
+                () => service.RunAsync(
+                    AddAml,
+                    "aml-add",
+                    new BenchmarkConfiguration("Part", 1, 1),
+                    ServerUrl,
+                    AccessToken,
+                    EnvironmentId,
+                    runId,
+                    directory));
+
+            Assert.Equal(
+                originalContent,
+                File.ReadAllText(manifestPath));
+
+            arasClient.Verify(
+                client => client.ExecuteAmlAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()),
+                Times.Never);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
 }

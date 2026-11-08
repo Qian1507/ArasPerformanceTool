@@ -6,7 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace ArasPerformanceTool.Tests.Integration;
-
+[Collection("Aras Integration")]
 public class BenchmarkControllerTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly HttpClient _client;

@@ -247,4 +247,198 @@ public sealed class TestDataCleanupServiceTests
         }
     }
 
+    
+    [Fact]
+    public async Task CleanupAsync_WithPersistentManifest_SavesFinalState()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "ArasCleanupTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        var runId = Guid.NewGuid().ToString("N");
+
+        var manifestPath = Path.Combine(
+            directory,
+            $"{runId}.json");
+
+        string? createdPartId = null;
+        bool testPassed = false;
+
+        try
+        {
+            // 1. Create a persistent manifest.
+            var manifest = new TestDataManifest(
+                environmentId: ArasFixture.EnvironmentId,
+                filePath: manifestPath,
+                runId: runId);
+
+            var cleanupService =
+                new TestDataCleanupService(_aras.Client);
+
+            // 2. Create a real test Part in Aras.
+            var itemNumber =
+                $"LIA-PERSIST-{Guid.NewGuid():N}"[..24];
+
+            var createResponse = await _aras.CreateItemAsync(
+                "Part",
+                new Dictionary<string, string>
+                {
+                    ["item_number"] = itemNumber,
+                    ["name"] = "Persistent Cleanup Test"
+                });
+
+            var createXml = XDocument.Parse(createResponse);
+
+            Assert.DoesNotContain(
+                createXml.Descendants(),
+                x => x.Name.LocalName == "Fault");
+
+            var createdItem = createXml.Descendants()
+                .FirstOrDefault(x =>
+                    x.Name.LocalName == "Item" &&
+                    string.Equals(
+                        (string?)x.Attribute("type"),
+                        "Part",
+                        StringComparison.OrdinalIgnoreCase));
+
+            Assert.NotNull(createdItem);
+
+            createdPartId = (string?)createdItem.Attribute("id");
+
+            Assert.False(
+                string.IsNullOrWhiteSpace(createdPartId));
+
+            // 3. Track the created Part.
+            // Track() persists the manifest immediately.
+            manifest.Track(
+                "Part",
+                createdPartId!);
+
+            Assert.True(File.Exists(manifestPath));
+
+            // 4. Execute real cleanup.
+            var result = await cleanupService.CleanupAsync(
+                manifest,
+                ArasFixture.EnvironmentId,
+                ArasFixture.ServerUrl,
+                _aras.AccessToken);
+
+            // 5. Include per-item diagnostics on failure.
+            var diagnostics = string.Join(
+                Environment.NewLine,
+                result.Items.Select(item =>
+                    $"{item.ItemType}/{item.ItemId}: " +
+                    $"{item.FinalStatus}; {item.ErrorMessage}"));
+
+            Assert.True(
+                result.Failed == 0,
+                $"Expected no cleanup failures.{Environment.NewLine}{diagnostics}");
+
+            Assert.True(
+                result.Deleted == 1,
+                $"Expected one deleted item.{Environment.NewLine}{diagnostics}");
+
+            Assert.True(
+                result.Remaining == 0,
+                $"Expected no unresolved items.{Environment.NewLine}{diagnostics}");
+
+            // 6. Reload the manifest from disk.
+            var reloaded = TestDataManifest.Load(
+                manifestPath,
+                ArasFixture.EnvironmentId);
+
+            Assert.Equal(runId, reloaded.RunId);
+            Assert.Equal(
+                ArasFixture.EnvironmentId,
+                reloaded.EnvironmentId);
+
+            var trackedItem = Assert.Single(
+                reloaded.Items);
+
+            Assert.Equal(
+                createdPartId,
+                trackedItem.Id);
+
+            Assert.Equal(
+                TrackedItemStatus.Deleted,
+                trackedItem.Status);
+
+            Assert.Empty(reloaded.UnresolvedItems);
+
+            // All assertions passed.
+            testPassed = true;
+        }
+        finally
+        {
+            // 7. Safety fallback:
+            // Check whether the real Part still exists.
+            // Do not allow fallback errors to hide the
+            // original test failure.
+            if (!string.IsNullOrWhiteSpace(createdPartId))
+            {
+                try
+                {
+                    var existing = await _aras.GetItemAsync(
+                        "Part",
+                        createdPartId);
+
+                    if (!string.IsNullOrWhiteSpace(existing))
+                    {
+                        var existingXml = XDocument.Parse(existing);
+
+                        var exists = existingXml.Descendants().Any(x =>
+                            x.Name.LocalName == "Item" &&
+                            string.Equals(
+                                (string?)x.Attribute("type"),
+                                "Part",
+                                StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(
+                                (string?)x.Attribute("id"),
+                                createdPartId,
+                                StringComparison.OrdinalIgnoreCase));
+
+                        if (exists)
+                        {
+                            await _aras.DeleteItemAsync(
+                                "Part",
+                                createdPartId);
+
+                            Console.WriteLine(
+                                $"Safety cleanup deleted remaining Part: " +
+                                createdPartId);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(
+                        $"Safety cleanup failed for Part {createdPartId}: " +
+                        ex.Message);
+                }
+            }
+
+            // 8. Keep manifest files if the test failed.
+            if (testPassed)
+            {
+                if (Directory.Exists(directory))
+                {
+                    Directory.Delete(
+                        directory,
+                        recursive: true);
+                }
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"Test failed. Manifest retained for diagnosis: " +
+                    manifestPath);
+            }
+        }
+    }
+
+
+
 }
