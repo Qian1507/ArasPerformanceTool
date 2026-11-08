@@ -256,10 +256,33 @@ public async Task<IActionResult> StartBenchmark(
             var token = await _arasClient.GetAccessTokenAsync(
                 username,
                 password);
-            
-           
 
-            var runner = new BenchmarkRunner();
+            // =================================================
+            // Manifest Storage Configuration
+            // =================================================
+
+            var dataDirectory = _configuration["Storage:DataDirectory"]
+                ?? throw new InvalidOperationException(
+                    "Storage data directory is not configured.");
+
+            var dataRoot = Path.IsPathRooted(dataDirectory)
+                ? Path.GetFullPath(dataDirectory)
+                : Path.GetFullPath(Path.Combine(
+                    _environment.ContentRootPath,
+                    dataDirectory));
+
+            var manifestDirectory = Path.Combine(
+                dataRoot,
+                "manifests");
+
+            Directory.CreateDirectory(manifestDirectory);
+
+
+            // =================================================
+            // Benchmark Configuration
+            // =================================================
+            
+            var runner = new BenchmarkRunner();          
 
             var config = new BenchmarkConfiguration(
                 itemType,
@@ -272,13 +295,18 @@ public async Task<IActionResult> StartBenchmark(
 
             if (isRawAml)
             {
+                
                 var customResult =
                     await _customAmlBenchmarkService.RunAsync(
                         request.Aml!,
                         workloadName,
                         config,
                         serverUrl,
-                        token);
+                        token,
+                        environmentId,
+                        jobId.ToString("N"),
+                        manifestDirectory,
+                        HttpContext.RequestAborted);
 
                 // Reuse the existing benchmark report and statistics.
                 report = customResult.Report;
@@ -307,23 +335,6 @@ public async Task<IActionResult> StartBenchmark(
 
                
                 // Read the data directory from configuration.
-                var dataDirectory = _configuration["Storage:DataDirectory"]
-                    ?? throw new InvalidOperationException(
-                        "Storage data directory is not configured.");
-
-                // Resolve relative paths from the API content root.
-                var dataRoot = Path.IsPathRooted(dataDirectory)
-                    ? Path.GetFullPath(dataDirectory)
-                    : Path.GetFullPath(Path.Combine(
-                        _environment.ContentRootPath,
-                        dataDirectory));
-
-                // Create the persistent manifest directory.
-                var manifestDirectory = Path.Combine(
-                    dataRoot,
-                    "manifests");
-
-                Directory.CreateDirectory(manifestDirectory);
 
                 var manifestPath = Path.Combine(
                     manifestDirectory,

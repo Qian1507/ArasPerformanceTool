@@ -47,28 +47,32 @@ public sealed class TestDataManifest
     public string? EnvironmentId { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
 
-    public TestDataManifest(
-        string? environmentId = null,
-        string? filePath = null)
+ public TestDataManifest(
+    string? environmentId = null,
+    string? filePath = null,
+    string? runId = null)
+{
+    if (filePath != null &&
+        string.IsNullOrWhiteSpace(environmentId))
     {
-        if (filePath != null &&
-            string.IsNullOrWhiteSpace(environmentId))
-        {
-            throw new ArgumentException(
-                "EnvironmentId is required for persistence.");
-        }
-
-        EnvironmentId = environmentId;
-        _filePath = filePath;
-
-        RunId = Guid.NewGuid().ToString("N");
-        CreatedAtUtc = DateTime.UtcNow;
-
-        lock (_sync)
-        {
-            PersistUnderLock();
-        }
+        throw new ArgumentException(
+            "EnvironmentId is required for persistence.");
     }
+
+    EnvironmentId = environmentId;
+    _filePath = filePath;
+
+    RunId = string.IsNullOrWhiteSpace(runId)
+        ? Guid.NewGuid().ToString("N")
+        : runId;
+
+    CreatedAtUtc = DateTime.UtcNow;
+
+    lock (_sync)
+    {
+        PersistUnderLock();
+    }
+}
 
     private TestDataManifest(
         string filePath,

@@ -35,223 +35,299 @@ public sealed class CustomAmlBenchmarkService
         _arasClient = arasClient;
     }
 
-    public async Task<SingleAmlExecutionResult> RunAsync(
-        string rawAml,
-        string workloadName,
-        BenchmarkConfiguration config,
-        string serverUrl,
-        string accessToken,
-        CancellationToken cancellationToken = default)
+   
+public async Task<SingleAmlExecutionResult> RunAsync(
+    string rawAml,
+    string workloadName,
+    BenchmarkConfiguration config,
+    string serverUrl,
+    string accessToken,
+    string environmentId,
+    string runId,
+    string? manifestDirectory = null,
+    CancellationToken cancellationToken = default)
+{
+    ArgumentException.ThrowIfNullOrWhiteSpace(rawAml);
+    ArgumentNullException.ThrowIfNull(config);
+    ArgumentException.ThrowIfNullOrWhiteSpace(environmentId);
+    ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+    // Validate RunId before using it in a file path.
+    if (!Guid.TryParseExact(runId, "N", out _))
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(rawAml);
-        ArgumentNullException.ThrowIfNull(config);
+        throw new ArgumentException(
+            "RunId must be a GUID in N format.",
+            nameof(runId));
+    }
 
-        var template = ParseSingleItem(rawAml);
+    if (manifestDirectory is not null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            manifestDirectory);
+    }
 
-        string action = ((string?)template.Attribute("action") ?? "")
-            .Trim()
-            .ToLowerInvariant();
+    var template = ParseSingleItem(rawAml);
 
-        string itemType = ((string?)template.Attribute("type") ?? "")
-            .Trim();
+    string action = ((string?)template.Attribute("action") ?? "")
+        .Trim()
+        .ToLowerInvariant();
 
-        if (string.IsNullOrWhiteSpace(itemType))
-        {
-            throw new ArgumentException(
-                "Custom AML must specify an ItemType.");
-        }
+    string itemType = ((string?)template.Attribute("type") ?? "")
+        .Trim();
 
-        if (!string.Equals(
-            config.ItemType,
-            itemType,
-            StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException(
-                "Benchmark configuration ItemType does not match AML.");
-        }
+    if (string.IsNullOrWhiteSpace(itemType))
+    {
+        throw new ArgumentException(
+            "Custom AML must specify an ItemType.");
+    }
 
-        if (action is not ("get" or "add" or "edit" or "delete"))
-        {
-            throw new ArgumentException(
-                $"Unsupported AML action: '{action}'.");
-        }
+    if (!string.Equals(
+        config.ItemType,
+        itemType,
+        StringComparison.OrdinalIgnoreCase))
+    {
+        throw new ArgumentException(
+            "Benchmark configuration ItemType does not match AML.");
+    }
 
-        // Validate before any request reaches Aras.
-        switch (action)
-        {
-            case "get":
-                AmlParser.ValidateReadOnlyAml(rawAml);
+    if (action is not ("get" or "add" or "edit" or "delete"))
+    {
+        throw new ArgumentException(
+            $"Unsupported AML action: '{action}'.");
+    }
 
-                if (rawAml.Contains("${UNIQUE}") ||
-                    rawAml.Contains("${INDEX}"))
-                {
-                    throw new ArgumentException(
-                        "Dynamic placeholders are not supported " +
-                        "in read-only benchmarks.");
-                }
-                break;
+    // Validate AML before sending any request to Aras.
+    switch (action)
+    {
+        case "get":
+            AmlParser.ValidateReadOnlyAml(rawAml);
 
-            case "add":
-                ValidateSafeAdd(template);
-
-                if (config.Concurrency != 1)
-                {
-                    throw new ArgumentException(
-                        "Custom add currently requires Concurrency = 1.");
-                }
-                break;
-
-            case "edit":
-            case "delete":
-                // An explicit ID or a test-looking name does not
-                // prove ownership. Until tracked targets can be
-                // verified across benchmark requests, reject writes.
-                throw new InvalidOperationException(
-                    $"Custom AML '{action}' is not enabled yet. " +
-                    "A benchmark-owned target must be verified " +
-                    "before update or delete can be executed.");
-        }
-
-        string runId = Guid.NewGuid()
-            .ToString("N")[..12]
-            .ToUpperInvariant();
-
-        // A new manifest for every benchmark execution.
-        var dataManager = new TestDataManager(_arasClient);
-        var runner = new BenchmarkRunner();
-
-        BenchmarkReport? report = null;
-        CleanupResult? cleanupSummary = null;
-        string? cleanupError = null;
-        string? sampleResponseXml = null;
-
-        try
-        {
-            report = await runner.RunAsync(
-                workloadName,
-                config,
-                async index =>
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    string executableAml;
-
-                    if (action == "add")
-                    {
-                        // Clone the template for each iteration.
-                        var item = new XElement(template);
-
-                        string marker =
-                            $"BENCH_{runId}_{index:D4}";
-
-                        AddTestMarker(item, marker);
-
-                       // Wrap the Item in AML before sending it to Aras.
-                        executableAml = new XElement("AML", item)
-                            .ToString(SaveOptions.DisableFormatting);
-                    }
-                    else
-                    {
-                        // Keep the original read-only AML execution.
-                        executableAml =
-                            AmlParser.PrepareExecutableAml(
-                                rawAml,
-                                index);
-                    }
-
-                    string responseXml =
-                        await _arasClient.ExecuteAmlAsync(
-                            serverUrl,
-                            accessToken,
-                            executableAml,
-                            cancellationToken);
-
-                    if (action == "add")
-                    {
-                        string? createdId =
-                            ExtractCreatedId(responseXml, itemType);
-
-                        if (string.IsNullOrWhiteSpace(createdId))
-                        {
-                            throw new InvalidOperationException(
-                                "Aras response has no created Item ID. " +
-                                $"RunId={runId}. " +
-                                "Manual reconciliation may be needed.");
-                        }
-
-                        // Track immediately after receiving the ID.
-                        dataManager.Manifest.Track(
-                            itemType,
-                            createdId);
-                    }
-
-                    // Capture one response without another AML call.
-                    Interlocked.CompareExchange(
-                        ref sampleResponseXml,
-                        responseXml,
-                        null);
-                },
-                cancellationToken);
-        }
-        finally
-        {
-            if (action == "add")
+            if (rawAml.Contains("${UNIQUE}") ||
+                rawAml.Contains("${INDEX}"))
             {
-                try
-                {
-                    // Cleanup must run independently of benchmark
-                    // cancellation, with its own timeout.
-                    using var cleanupCts =
-                        new CancellationTokenSource(
-                            TimeSpan.FromSeconds(30));
-
-                    cleanupSummary =
-                        await dataManager.CleanupAsync(
-                            serverUrl,
-                            accessToken,
-                            itemType,
-                            cleanupCts.Token);
-
-                    if (cleanupSummary.FailedIds.Count > 0 ||
-                        dataManager.Manifest.TotalCount > 0)
-                    {
-                        cleanupError =
-                            "Cleanup incomplete. " +
-                            $"RunId={runId}. " +
-                            "Some test items may remain.";
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    cleanupError =
-                        "Cleanup timed out. " +
-                        $"RunId={runId}. " +
-                        "Residual test records must be checked.";
-                }
-                catch (Exception ex)
-                {
-                    cleanupError =
-                        $"Cleanup failed. RunId={runId}. " +
-                        ex.Message;
-                }
+                throw new ArgumentException(
+                    "Dynamic placeholders are not supported " +
+                    "in read-only benchmarks.");
             }
-        }
+            break;
 
-        if (report is null)
+        case "add":
+            ValidateSafeAdd(template);
+
+            if (config.Concurrency != 1)
+            {
+                throw new ArgumentException(
+                    "Custom add currently requires Concurrency = 1.");
+            }
+
+            // All writing operations must use persistent tracking.
+            if (string.IsNullOrWhiteSpace(manifestDirectory))
+            {
+                throw new InvalidOperationException(
+                    "Custom AML add requires a persistent manifest directory.");
+            }
+            break;
+
+        case "edit":
+        case "delete":
+            // An explicit ID or test-looking name does not prove
+            // ownership of the target item.
+            throw new InvalidOperationException(
+                $"Custom AML '{action}' is not enabled yet. " +
+                "A benchmark-owned target must be verified " +
+                "before update or delete can be executed.");
+    }
+
+    // Initialize the manifest before executing any AML.
+    TestDataManifest manifest;
+
+    if (manifestDirectory is null)
+    {
+        if (action == "add")
         {
             throw new InvalidOperationException(
-                "Benchmark did not produce a report. " +
-                $"RunId={runId}. " +
-                (cleanupError ?? "Check the benchmark execution log."));
+                "Custom AML add requires a persistent manifest directory.");
+        }
+        // Only read-only AML may use in-memory tracking.
+        manifest = new TestDataManifest(
+            environmentId: environmentId,
+            runId: runId);
+    }
+    else
+    {
+        // The directory must come from server-side configuration,
+        // not directly from the client request.
+        var directory = Path.GetFullPath(
+            manifestDirectory);
+
+        Directory.CreateDirectory(directory);
+
+        var manifestPath = Path.Combine(
+            directory,
+            $"{runId}.json");
+
+        // Prevent accidental replacement of an existing run.
+        if (File.Exists(manifestPath))
+        {
+            throw new IOException(
+                $"A manifest already exists for RunId {runId}.");
         }
 
-        return new SingleAmlExecutionResult(
-            Report: report,
-            CleanupSummary: cleanupSummary,
-            CleanupError: cleanupError,
-            SampleResponseXml: sampleResponseXml,
-            RunId: runId);
+        manifest = new TestDataManifest(
+            environmentId: environmentId,
+            filePath: manifestPath,
+            runId: runId);
     }
+
+    var dataManager = new TestDataManager(
+        _arasClient,
+        manifest);
+
+    var runner = new BenchmarkRunner();
+
+    BenchmarkReport? report = null;
+    CleanupResult? cleanupSummary = null;
+    string? cleanupError = null;
+    string? sampleResponseXml = null;
+
+    try
+    {
+        report = await runner.RunAsync(
+            workloadName,
+            config,
+            async index =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string executableAml;
+
+                if (action == "add")
+                {
+                    // Clone the original AML for every iteration.
+                    var item = new XElement(template);
+
+                    string marker =
+                        $"BENCH_{runId}_{index:D4}";
+
+                    AddTestMarker(item, marker);
+
+                    // Wrap the Item in AML.
+                    executableAml = new XElement("AML", item)
+                        .ToString(SaveOptions.DisableFormatting);
+                }
+                else
+                {
+                    executableAml =
+                        AmlParser.PrepareExecutableAml(
+                            rawAml,
+                            index);
+                }
+
+                string responseXml =
+                    await _arasClient.ExecuteAmlAsync(
+                        serverUrl,
+                        accessToken,
+                        executableAml,
+                        cancellationToken);
+
+                if (action == "add")
+                {
+                    string? createdId =
+                        ExtractCreatedId(
+                            responseXml,
+                            itemType);
+
+                    if (string.IsNullOrWhiteSpace(createdId))
+                    {
+                        throw new InvalidOperationException(
+                            "Aras response has no created Item ID. " +
+                            $"RunId={runId}. " +
+                            "Manual reconciliation may be needed.");
+                    }
+
+                    // Persist the successfully created item.
+                    dataManager.Manifest.Track(
+                        itemType,
+                        createdId,
+                        TestItemSource.CustomAml);
+                }
+
+                // Keep a sample response without making
+                // an additional AML request.
+                Interlocked.CompareExchange(
+                    ref sampleResponseXml,
+                    responseXml,
+                    null);
+            },
+            cancellationToken);
+    }
+    finally
+    {
+        if (action == "add")
+        {
+            try
+            {
+                // Cleanup runs independently from benchmark
+                // cancellation, with its own timeout.
+                using var cleanupCts =
+                    new CancellationTokenSource(
+                        TimeSpan.FromSeconds(30));
+
+                cleanupSummary =
+                    await dataManager.CleanupAsync(
+                        serverUrl,
+                        accessToken,
+                        itemType,
+                        cleanupCts.Token,
+                        expectedEnvironmentId: environmentId);
+                
+                if (cleanupSummary is null ||
+                    cleanupSummary.FailedIds.Count > 0 ||
+                    dataManager.Manifest.TotalCount > 0)
+                {
+                    cleanupError =
+                        "Cleanup incomplete. " +
+                        $"RunId={runId}. " +
+                        "Some test items may remain.";
+                }
+
+            }
+            catch (OperationCanceledException)
+            {
+                cleanupError =
+                    "Cleanup timed out. " +
+                    $"RunId={runId}. " +
+                    "Residual test records must be checked.";
+            }
+            catch (Exception ex)
+            {
+                // Do not discard the benchmark report because
+                // cleanup failed. Persisted manifest records
+                // remain available for future manual cleanup.
+                cleanupError =
+                    $"Cleanup failed. RunId={runId}. " +
+                    ex.Message;
+            }
+        }
+    }
+
+    if (report is null)
+    {
+        throw new InvalidOperationException(
+            "Benchmark did not produce a report. " +
+            $"RunId={runId}. " +
+            (cleanupError ??
+             "Check the benchmark execution log."));
+    }
+
+    return new SingleAmlExecutionResult(
+        Report: report,
+        CleanupSummary: cleanupSummary,
+        CleanupError: cleanupError,
+        SampleResponseXml: sampleResponseXml,
+        RunId: runId);
+}
+
 
     /// <summary>
     /// Accepts a single Item or AML containing one top-level Item.
