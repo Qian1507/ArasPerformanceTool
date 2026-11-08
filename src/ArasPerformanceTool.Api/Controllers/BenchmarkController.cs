@@ -1040,6 +1040,126 @@ public async Task<IActionResult> StartBenchmark(
         });
     }
 
+    
+    /// <summary>
+    /// Retrieves unresolved test items for a specific benchmark run.
+    /// Read-only; does not execute AML or delete items.
+    /// </summary>
+    [HttpGet("pending-cleanup/{runId:guid}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    public IActionResult GetPendingCleanupRun(Guid runId)
+    {
+        var serverUrl = _configuration["Aras:ServerUrl"];
+        var database = _configuration["Aras:Database"];
+
+        if (string.IsNullOrWhiteSpace(serverUrl) ||
+            string.IsNullOrWhiteSpace(database))
+        {
+            return StatusCode(500, new
+            {
+                Message = "Aras environment is not configured."
+            });
+        }
+
+        var environmentId =
+            $"{serverUrl.TrimEnd('/')}|{database}";
+
+        var dataDirectory =
+            _configuration["Storage:DataDirectory"];
+
+        if (string.IsNullOrWhiteSpace(dataDirectory))
+        {
+            return StatusCode(500, new
+            {
+                Message = "Storage data directory is not configured."
+            });
+        }
+
+        var dataRoot = Path.IsPathRooted(dataDirectory)
+            ? Path.GetFullPath(dataDirectory)
+            : Path.GetFullPath(Path.Combine(
+                _environment.ContentRootPath,
+                dataDirectory));
+
+        var manifestDirectory = Path.Combine(
+            dataRoot,
+            "manifests");
+
+        // A GUID route prevents arbitrary file path input.
+        var manifestPath = Path.Combine(
+            manifestDirectory,
+            $"{runId:N}.json");
+
+        if (!System.IO.File.Exists(manifestPath))
+        {
+            return NotFound(new
+            {
+                Message = "Pending cleanup run was not found."
+            });
+        }
+
+        try
+        {
+            var manifest = TestDataManifest.Load(
+                manifestPath,
+                environmentId);
+
+            // Additional consistency check:
+            // file name must correspond to its stored RunId.
+            if (!Guid.TryParseExact(
+                    manifest.RunId, "N", out var storedRunId) ||
+                storedRunId != runId)
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Manifest validation failed."
+                });
+            }
+
+            var items = manifest.UnresolvedItems
+                .Select(item => new
+                {
+                    ItemType = item.ItemType,
+                    ItemId = item.Id,
+                    Status = item.Status.ToString()
+                })
+                .ToList();
+
+            return Ok(new
+            {
+                RunId = manifest.RunId,
+                CreatedAtUtc = manifest.CreatedAtUtc,
+                RemainingCount = items.Count,
+                Items = items
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            // Includes environment mismatch if Load()
+            // uses InvalidOperationException for validation.
+            return NotFound(new
+            {
+                Message = "Pending cleanup run was not found."
+            });
+        }
+        catch (Exception ex) when (
+            ex is IOException or
+            InvalidDataException or
+            UnauthorizedAccessException or
+            System.Text.Json.JsonException or
+            ArgumentException)
+        {
+            // Do not expose file paths or internal exceptions.
+            return StatusCode(500, new
+            {
+                Message = "Unable to load cleanup manifest."
+            });
+        }
+    }
+
+
 
     /// <summary>
     /// Retrieves all benchmark results stored in memory.

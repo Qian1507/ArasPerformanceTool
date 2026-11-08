@@ -207,7 +207,7 @@ public async Task<SingleAmlExecutionResult> RunAsync(
                     var item = new XElement(template);
 
                     string marker =
-                        $"BENCH_{runId}_{index:D4}";
+                         $"{runId[..12]}_{index:D4}";
 
                     AddTestMarker(item, marker);
 

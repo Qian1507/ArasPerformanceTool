@@ -12,8 +12,30 @@ builder.Services.AddControllers();
 // Register HttpClient
 builder.Services.AddHttpClient("Aras");
 
-// Register FileResultStore as Singleton
-builder.Services.AddSingleton<FileResultStore>();
+// Register FileResultStore with the configured report directory.
+builder.Services.AddSingleton<FileResultStore>(sp =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+
+    var dataDirectory = configuration["Storage:DataDirectory"];
+
+    if (string.IsNullOrWhiteSpace(dataDirectory))
+    {
+        throw new InvalidOperationException(
+            "Storage data directory is not configured.");
+    }
+
+    var dataRoot = Path.IsPathRooted(dataDirectory)
+        ? Path.GetFullPath(dataDirectory)
+        : Path.GetFullPath(Path.Combine(
+            environment.ContentRootPath,
+            dataDirectory));
+
+    var reportDirectory = Path.Combine(dataRoot, "reports");
+
+    return new FileResultStore(reportDirectory);
+});
 
 // Register ArasClient with required configuration
 builder.Services.AddTransient<IArasClient>(sp =>

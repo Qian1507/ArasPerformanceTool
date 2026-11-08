@@ -4,6 +4,7 @@ using ArasPerformanceTool.Engine.Benchmarking;
 using ArasPerformanceTool.Engine.Services;
 using Moq;
 using Xunit;
+using System.Xml.Linq;
 
 namespace ArasPerformanceTool.Tests.Unit;
 
@@ -366,6 +367,179 @@ public sealed class CustomAmlBenchmarkServiceTests
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+ 
+
+    
+    [Fact]
+    public async Task RunAsync_WhenAddRunsMultipleIterations_UsesDistinctItemNumbers()
+    {
+        // Arrange
+        var runId = Guid.NewGuid().ToString("N");
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "ArasPerformanceToolTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        var createdIds = new[]
+        {
+            "11111111111111111111111111111111",
+            "22222222222222222222222222222222"
+        };
+
+        var addItemNumbers = new List<string>();
+        var addCount = 0;
+
+        try
+        {
+            var arasClient = new Mock<IArasClient>();
+
+            arasClient
+                .Setup(client => client.ExecuteAmlAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((
+                    string server,
+                    string token,
+                    string aml,
+                    CancellationToken ct) =>
+                {
+                    var xml = XDocument.Parse(aml);
+
+                    var item = xml.Descendants()
+                        .FirstOrDefault(x =>
+                            x.Name.LocalName == "Item");
+
+                    if (item is null)
+                    {
+                        throw new InvalidOperationException(
+                            "AML request contains no Item.");
+                    }
+
+                    var action =
+                        ((string?)item.Attribute("action") ?? "")
+                        .ToLowerInvariant();
+
+                    if (action == "add")
+                    {
+                        var itemNumber = item.Elements()
+                            .FirstOrDefault(x =>
+                                x.Name.LocalName == "item_number")
+                            ?.Value;
+
+                        Assert.False(
+                            string.IsNullOrWhiteSpace(itemNumber));
+
+                        addItemNumbers.Add(itemNumber!);
+
+                        var id = createdIds[addCount++];
+
+                        return $"""
+                            <AML>
+                            <Item type="Part" id="{id}" action="add" />
+                            </AML>
+                            """;
+                    }
+
+                    // Cleanup: simulate a successful Aras read/delete.
+                    // The mocked read reports no matching Item,
+                    // so Cleanup can classify tracked IDs as
+                    // AlreadyMissing without changing the add test.
+                    if (action == "get")
+                    {
+                        return """
+                            <AML />
+                            """;
+                    }
+
+                    if (action == "delete")
+                    {
+                        return """
+                            <AML>
+                            <Result>OK</Result>
+                            </AML>
+                            """;
+                    }
+
+                    throw new InvalidOperationException(
+                        $"Unexpected AML action: {action}");
+                });
+
+            var service = new CustomAmlBenchmarkService(
+                arasClient.Object);
+
+            var config = new BenchmarkConfiguration(
+                "Part",
+                2,
+                1);
+
+            // Act
+            var result = await service.RunAsync(
+                AddAml,
+                "aml-add-two-iterations",
+                config,
+                ServerUrl,
+                AccessToken,
+                EnvironmentId,
+                runId,
+                directory);
+
+            // Assert: Two add requests with distinct item numbers.
+            Assert.Equal(2, addCount);
+            Assert.Equal(2, addItemNumbers.Count);
+            Assert.Equal(
+                2,
+                addItemNumbers.Distinct(StringComparer.Ordinal).Count());
+
+            // Verify both item IDs were persisted.
+            var manifestPath = Path.Combine(
+                directory,
+                $"{runId}.json");
+
+            Assert.True(File.Exists(manifestPath));
+
+            using var document = JsonDocument.Parse(
+                File.ReadAllText(manifestPath));
+
+            var root = document.RootElement;
+
+            Assert.Equal(
+                runId,
+                root.GetProperty("RunId").GetString());
+
+            var items = root.GetProperty("Items")
+                .EnumerateArray()
+                .ToArray();
+
+            Assert.Equal(2, items.Length);
+
+            var trackedIds = items
+                .Select(item =>
+                    item.GetProperty("Id").GetString())
+                .ToHashSet();
+
+            Assert.Contains(createdIds[0], trackedIds);
+            Assert.Contains(createdIds[1], trackedIds);
+
+            Assert.All(items, item =>
+            {
+                Assert.Equal(
+                    (int)TestItemSource.CustomAml,
+                    item.GetProperty("Source").GetInt32());
+            });
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
         }
     }
 
