@@ -126,6 +126,18 @@ public sealed class TestDataManifest
                 "Manifest is missing required data or has an invalid RunId.");
         }
 
+        // Add this validation.
+        var fileNameRunId = Path.GetFileNameWithoutExtension(filePath);
+
+        if (!string.Equals(
+            fileNameRunId,
+            snapshot.RunId,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Manifest filename does not match its RunId.");
+        }
+
         // Validate all tracked items before loading them.
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 

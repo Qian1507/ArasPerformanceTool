@@ -192,6 +192,14 @@ public async Task<CleanupExecutionResult> CleanupAsync(
         }
         catch (Exception ex)
         {
+             // Temporary diagnostic output: retain exception type and stack trace.
+            Console.Error.WriteLine(
+                $"Cleanup item failed. " +
+                $"RunId={manifest.RunId}, " +
+                $"ItemType={item.ItemType}, " +
+                $"ItemId={item.Id}" +
+                $"{Environment.NewLine}{ex}");
+
             // A single item failure should not stop cleanup.
             manifest.MarkFailed(
                 item.ItemType,

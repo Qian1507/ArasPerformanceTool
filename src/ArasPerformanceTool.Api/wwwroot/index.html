@@ -163,6 +163,42 @@
                     </div>
                 </div>
             </section>
+            
+            <!-- Pending Test Data Cleanup -->
+            <section id="pending-cleanup-section" class="card">
+                <div class="section-header">
+                    <h2>Pending Test Data Cleanup</h2>
+                    <button
+                        type="button"
+                        id="refresh-pending-cleanup"
+                        class="btn btn-secondary">
+                        Refresh
+                    </button>
+                </div>
+
+                <p id="pending-cleanup-message" role="status"></p>
+
+                <div id="pending-cleanup-list"></div>
+
+                <div id="pending-cleanup-errors" role="alert"></div>
+
+                <div id="pending-cleanup-preview" class="hidden">
+                    <h3>Run Preview</h3>
+                    <p id="pending-cleanup-preview-message" role="status"></p>
+                    <div id="pending-cleanup-items"></div>
+
+                    <button
+                        type="button"
+                        id="clean-pending-run"
+                        class="secondary-btn"
+                        disabled>
+                        Clean This Run
+                    </button>
+
+                    <p id="pending-cleanup-result" role="status"></p>
+                </div>
+            </section>
+
         </main>
     </div>
 

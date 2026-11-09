@@ -94,13 +94,16 @@ public sealed class TestDataManifestTests
 
         try
         {
+            var runId = Guid.NewGuid().ToString("N");
+
             var filePath = Path.Combine(
                 directory,
-                "manifest.json");
+                $"{runId}.json");
 
             var original = new TestDataManifest(
-                EnvironmentId,
-                filePath);
+                environmentId: EnvironmentId,
+                filePath: filePath,
+                runId: runId);
 
             original.Track("Part", "PART001");
             original.MarkPending("Part", "PART001");
@@ -143,13 +146,16 @@ public sealed class TestDataManifestTests
 
         try
         {
+            var runId = Guid.NewGuid().ToString("N");
+
             var filePath = Path.Combine(
                 directory,
-                "manifest.json");
+                $"{runId}.json");
 
             var manifest = new TestDataManifest(
-                EnvironmentId,
-                filePath);
+                environmentId: EnvironmentId,
+                filePath: filePath,
+                runId: runId);
 
             manifest.Track("Part", "PART001");
 

@@ -288,6 +288,42 @@ public sealed class TestDataManifestStoreTests : IDisposable
         return path;
     }
 
+    
+    [Fact]
+    public void Scan_WhenFileNameDoesNotMatchRunId_RecordsError()
+    {
+        var originalPath = WriteManifest(
+            statuses: [TrackedItemStatus.Active]);
+
+        var mismatchedPath = Path.Combine(
+            _directory,
+            $"{Guid.NewGuid():N}.json");
+
+        File.Move(originalPath, mismatchedPath);
+
+        var before = File.ReadAllBytes(mismatchedPath);
+
+        var result = new TestDataManifestStore(_directory)
+            .Scan(EnvironmentId);
+
+        Assert.Empty(result.PendingRuns);
+
+        var error = Assert.Single(result.Errors);
+
+        Assert.Equal(mismatchedPath, error.ManifestPath);
+
+        Assert.Contains(
+            "does not match",
+            error.ErrorMessage,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            before,
+            File.ReadAllBytes(mismatchedPath));
+        
+        Assert.False(File.Exists(originalPath));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory))
