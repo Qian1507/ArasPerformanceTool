@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Mvc;
 using ArasPerformanceTool.Engine.Services;
 using ArasPerformanceTool.Engine.Models;
 using Microsoft.AspNetCore.Hosting;
+using ArasPerformanceTool.Api.Services;
 
 namespace ArasPerformanceTool.Api.Controllers;
 
@@ -29,22 +30,29 @@ public class BenchmarkController : ControllerBase
     private readonly ILogger<BenchmarkController> _logger;
 
     private readonly IWebHostEnvironment _environment;
+    private readonly RunExecutionCoordinator _runExecutionCoordinator;
 
-    public BenchmarkController(
-        IArasClient arasClient,
-        FileResultStore fileResultStore,
-        IConfiguration configuration,
-        ILogger<BenchmarkController> logger,
-        CustomAmlBenchmarkService customAmlBenchmarkService,
-        IWebHostEnvironment environment)
-    {
-        _arasClient = arasClient;
-        _fileResultStore = fileResultStore;
-        _configuration = configuration;
-        _logger = logger;
-        _customAmlBenchmarkService = customAmlBenchmarkService;
-        _environment = environment;
-    }
+    private readonly TestDataCleanupService _cleanupService;
+
+   public BenchmarkController(
+    IArasClient arasClient,
+    FileResultStore fileResultStore,
+    IConfiguration configuration,
+    ILogger<BenchmarkController> logger,
+    CustomAmlBenchmarkService customAmlBenchmarkService,
+    IWebHostEnvironment environment,
+    RunExecutionCoordinator runExecutionCoordinator,
+    TestDataCleanupService cleanupService)
+{
+    _arasClient = arasClient;
+    _fileResultStore = fileResultStore;
+    _configuration = configuration;
+    _logger = logger;
+    _customAmlBenchmarkService = customAmlBenchmarkService;
+    _environment = environment;
+    _runExecutionCoordinator = runExecutionCoordinator;
+    _cleanupService = cleanupService;
+}
     /// <summary>
     /// Runs a standard CRUD or custom read-only AML benchmark.
     /// </summary>
@@ -209,6 +217,13 @@ public async Task<IActionResult> StartBenchmark(
         // =====================================================
 
         var jobId = Guid.NewGuid();
+        if (!_runExecutionCoordinator.TryAcquire(jobId))
+        {
+            return Conflict(new
+            {
+                Message = "The run is already executing or being cleaned up."
+            });
+        }
         var createdAtUtc = DateTime.UtcNow;
 
         var workloadName = string.IsNullOrWhiteSpace(
@@ -916,6 +931,10 @@ public async Task<IActionResult> StartBenchmark(
                 errorMessage =
                     "Benchmark execution or cleanup failed. Check server logs.";
             }
+                finally
+            {
+                _runExecutionCoordinator.Release(jobId);
+            }
 
             // =====================================================
             // 8. Build API Response
@@ -950,6 +969,8 @@ public async Task<IActionResult> StartBenchmark(
 
         return Ok(response);
     }
+   
+    
 
     /// <summary>
     /// Retrieves a benchmark result by Job ID.
@@ -1092,6 +1113,8 @@ public async Task<IActionResult> StartBenchmark(
             manifestDirectory,
             $"{runId:N}.json");
 
+       
+
         if (!System.IO.File.Exists(manifestPath))
         {
             return NotFound(new
@@ -1157,9 +1180,194 @@ public async Task<IActionResult> StartBenchmark(
                 Message = "Unable to load cleanup manifest."
             });
         }
+    
     }
 
 
+    [HttpPost("pending-cleanup/{runId:guid}/cleanup")]
+    public async Task<IActionResult> CleanupPendingRun(Guid runId)
+    {
+        if (!_runExecutionCoordinator.TryAcquire(runId))
+        {
+            return Conflict(new
+            {
+                Message = "The run is already executing or being cleaned up."
+            });
+        }
+
+        try
+        {
+            var serverUrl = _configuration["Aras:ServerUrl"];
+            var database = _configuration["Aras:Database"];
+            var dataDirectory = _configuration["Storage:DataDirectory"];
+
+            if (string.IsNullOrWhiteSpace(serverUrl) ||
+                string.IsNullOrWhiteSpace(database) ||
+                string.IsNullOrWhiteSpace(dataDirectory))
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Aras or storage configuration is missing."
+                });
+            }
+
+            var environmentId = $"{serverUrl.TrimEnd('/')}|{database}";
+
+            var dataRoot = Path.IsPathRooted(dataDirectory)
+                ? Path.GetFullPath(dataDirectory)
+                : Path.GetFullPath(Path.Combine(
+                    _environment.ContentRootPath,
+                    dataDirectory));
+
+            var manifestPath = Path.Combine(
+                dataRoot,
+                "manifests",
+                $"{runId:N}.json");
+
+            if (!System.IO.File.Exists(manifestPath))
+            {
+                return NotFound(new
+                {
+                    Message = "Pending cleanup run was not found."
+                });
+            }
+
+            // Always reload from disk after acquiring the Run lock.
+            var manifest = TestDataManifest.Load(
+                manifestPath,
+                environmentId);
+
+            if (!Guid.TryParseExact(
+                    manifest.RunId, "N", out var storedRunId) ||
+                storedRunId != runId)
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Manifest validation failed."
+                });
+            }
+
+            // No Aras connection is necessary for a completed Run.
+            if (manifest.UnresolvedItems.Count == 0)
+            {
+                return Ok(new
+                {
+                    RunId = runId,
+                    Found = 0,
+                    Deleted = 0,
+                    AlreadyMissing = 0,
+                    Failed = 0,
+                    Remaining = 0,
+                    Duration = TimeSpan.Zero,
+                    Items = Array.Empty<object>()
+                });
+            }
+
+            // Authenticate with the configured Aras environment.
+            var username = _configuration["ARAS_USERNAME"];
+            var password = _configuration["ARAS_PASSWORD"];
+
+            if (string.IsNullOrWhiteSpace(username) ||
+                string.IsNullOrWhiteSpace(password))
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Aras credentials are not configured."
+                });
+            }
+
+            var token = await _arasClient.GetAccessTokenAsync(
+                username,
+                password);
+
+            // Give cleanup its own timeout budget.
+            // Do not use HttpContext.RequestAborted for recovery cleanup.
+            using var cleanupCts = new CancellationTokenSource(
+                TimeSpan.FromMinutes(2));
+
+            // Cleanup all unresolved items belonging to this Run.
+            var cleanupResult = await _cleanupService.CleanupAsync(
+                manifest,
+                environmentId,
+                serverUrl,
+                token,
+                cancellationToken: cleanupCts.Token);
+
+            // Return only safe summary fields.
+            return Ok(new
+            {
+                RunId = runId,
+                cleanupResult.Found,
+                cleanupResult.Deleted,
+                cleanupResult.AlreadyMissing,
+                cleanupResult.Failed,
+                cleanupResult.Remaining,
+                cleanupResult.Duration,
+                Completed = cleanupResult.Remaining == 0
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "Manual cleanup timed out: RunId={RunId}",
+                runId);
+
+            return StatusCode(
+                StatusCodes.Status504GatewayTimeout,
+                new
+                {
+                    Message = "Manual cleanup timed out. Remaining items may require another cleanup."
+                });
+        }
+        catch (FileNotFoundException)
+        {
+            return NotFound(new
+            {
+                Message = "Pending cleanup run was not found."
+            });
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return NotFound(new
+            {
+                Message = "Pending cleanup run was not found."
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Manual cleanup manifest validation failed: RunId={RunId}",
+                runId);
+
+            return StatusCode(500, new
+            {
+                Message = "Cleanup manifest validation failed."
+            });
+        }
+        catch (Exception ex) when (
+            ex is IOException or
+            InvalidDataException or
+            UnauthorizedAccessException or
+            System.Text.Json.JsonException or
+            ArgumentException)
+        {
+            _logger.LogError(
+                ex,
+                "Unable to prepare manual cleanup: RunId={RunId}",
+                runId);
+
+            return StatusCode(500, new
+            {
+                Message = "Unable to prepare manual cleanup."
+            });
+        }
+
+        finally
+        {
+            _runExecutionCoordinator.Release(runId);
+        }
+    }
 
     /// <summary>
     /// Retrieves all benchmark results stored in memory.

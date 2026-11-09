@@ -454,8 +454,16 @@ public sealed class CustomAmlBenchmarkServiceTests
                     if (action == "get")
                     {
                         return """
-                            <AML />
-                            """;
+                           <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+                            <SOAP-ENV:Body>
+                            <SOAP-ENV:Fault>
+                            <faultcode>0</faultcode>
+                            <faultstring>No items found</faultstring>
+                            </SOAP-ENV:Fault>
+                        </SOAP-ENV:Body>
+                        </SOAP-ENV:Envelope>
+                        """;
+                       
                     }
 
                     if (action == "delete")
@@ -496,7 +504,7 @@ public sealed class CustomAmlBenchmarkServiceTests
             Assert.Equal(
                 2,
                 addItemNumbers.Distinct(StringComparer.Ordinal).Count());
-
+           
             // Verify both item IDs were persisted.
             var manifestPath = Path.Combine(
                 directory,
@@ -533,6 +541,17 @@ public sealed class CustomAmlBenchmarkServiceTests
                     (int)TestItemSource.CustomAml,
                     item.GetProperty("Source").GetInt32());
             });
+
+             Assert.Null(result.CleanupError);
+            Assert.NotNull(result.CleanupSummary);
+            Assert.Empty(result.CleanupSummary!.FailedIds);
+
+            var finalManifest = TestDataManifest.Load(
+                manifestPath,
+                EnvironmentId);
+
+            Assert.Empty(finalManifest.UnresolvedItems);
+
         }
         finally
         {

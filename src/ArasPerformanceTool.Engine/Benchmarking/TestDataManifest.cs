@@ -119,11 +119,40 @@ public sealed class TestDataManifest
                 "Aras environment mismatch.");
         }
 
-        if (string.IsNullOrWhiteSpace(snapshot.RunId) ||
-            snapshot.Items == null)
+        if (!Guid.TryParseExact(snapshot.RunId, "N", out _)
+            || snapshot.Items == null)
         {
             throw new InvalidDataException(
-                "Manifest is missing required data.");
+                "Manifest is missing required data or has an invalid RunId.");
+        }
+
+        // Validate all tracked items before loading them.
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in snapshot.Items)
+        {
+            if (item == null ||
+                string.IsNullOrWhiteSpace(item.ItemType) ||
+                string.IsNullOrWhiteSpace(item.Id))
+            {
+                throw new InvalidDataException(
+                    "Manifest contains an invalid tracked item.");
+            }
+
+            if (!Enum.IsDefined(item.Status) ||
+                !Enum.IsDefined(item.Source))
+            {
+                throw new InvalidDataException(
+                    "Manifest contains an invalid item status or source.");
+            }
+
+            var key = GetKey(item.ItemType, item.Id);
+
+            if (!keys.Add(key))
+            {
+                throw new InvalidDataException(
+                    "Manifest contains duplicate tracked items.");
+            }
         }
 
         return new TestDataManifest(filePath, snapshot);

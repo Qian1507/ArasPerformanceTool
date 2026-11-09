@@ -3,6 +3,7 @@ using ArasPerformanceTool.Engine.Aras;
 using ArasPerformanceTool.Engine.Storage;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
 using ArasPerformanceTool.Engine.Benchmarking;
+using ArasPerformanceTool.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -66,13 +67,17 @@ builder.Services.AddScoped<CustomAmlBenchmarkService>();
 
 // Register test data manager for dependency injection
 builder.Services.AddScoped<TestDataManager>();
-
+// Register the TestDataCleanupService for dependency injection
+builder.Services.AddTransient<TestDataCleanupService>();
 
 // Register CRUD workloads
 builder.Services.AddTransient<CreateWorkload>();
 builder.Services.AddTransient<ReadWorkload>();
 builder.Services.AddTransient<UpdateWorkload>();
 builder.Services.AddTransient<DeleteWorkload>();
+
+// Register the RunExecutionCoordinator as a singleton
+builder.Services.AddSingleton<RunExecutionCoordinator>();
 
 var app = builder.Build();
 
