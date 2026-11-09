@@ -1248,8 +1248,8 @@ public async Task<IActionResult> StartBenchmark(
             }
 
             // No Aras connection is necessary for a completed Run.
-            if (manifest.UnresolvedItems.Count == 0)
-            {
+           if (manifest.UnresolvedItems.Count == 0)
+{
                 return Ok(new
                 {
                     RunId = runId,
@@ -1259,7 +1259,7 @@ public async Task<IActionResult> StartBenchmark(
                     Failed = 0,
                     Remaining = 0,
                     Duration = TimeSpan.Zero,
-                    Items = Array.Empty<object>()
+                    Completed = true
                 });
             }
 
@@ -1282,42 +1282,46 @@ public async Task<IActionResult> StartBenchmark(
 
             // Give cleanup its own timeout budget.
             // Do not use HttpContext.RequestAborted for recovery cleanup.
-            using var cleanupCts = new CancellationTokenSource(
+           using var cleanupCts = new CancellationTokenSource(
                 TimeSpan.FromMinutes(2));
 
-            // Cleanup all unresolved items belonging to this Run.
-            var cleanupResult = await _cleanupService.CleanupAsync(
-                manifest,
-                environmentId,
-                serverUrl,
-                token,
-                cancellationToken: cleanupCts.Token);
-
-            // Return only safe summary fields.
-            return Ok(new
+            try
             {
-                RunId = runId,
-                cleanupResult.Found,
-                cleanupResult.Deleted,
-                cleanupResult.AlreadyMissing,
-                cleanupResult.Failed,
-                cleanupResult.Remaining,
-                cleanupResult.Duration,
-                Completed = cleanupResult.Remaining == 0
-            });
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogWarning(
-                "Manual cleanup timed out: RunId={RunId}",
-                runId);
+                var cleanupResult = await _cleanupService.CleanupAsync(
+                    manifest,
+                    environmentId,
+                    serverUrl,
+                    token,
+                    cancellationToken: cleanupCts.Token);
 
-            return StatusCode(
-                StatusCodes.Status504GatewayTimeout,
-                new
+                return Ok(new
                 {
-                    Message = "Manual cleanup timed out. Remaining items may require another cleanup."
+                    RunId = runId,
+                    cleanupResult.Found,
+                    cleanupResult.Deleted,
+                    cleanupResult.AlreadyMissing,
+                    cleanupResult.Failed,
+                    cleanupResult.Remaining,
+                    cleanupResult.Duration,
+                    Completed = cleanupResult.Remaining == 0
                 });
+            }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Aras operation was canceled: RunId={RunId}",
+                    runId);
+
+                return StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    new
+                    {
+                        Message =
+                            "Communication with Aras was canceled or timed out. " +
+                            "Check the run status before retrying."
+                    });
+            }
         }
         catch (FileNotFoundException)
         {
@@ -1333,19 +1337,31 @@ public async Task<IActionResult> StartBenchmark(
                 Message = "Pending cleanup run was not found."
             });
         }
-        catch (InvalidOperationException ex)
+       catch (InvalidOperationException ex)
         {
             _logger.LogWarning(
                 ex,
-                "Manual cleanup manifest validation failed: RunId={RunId}",
+                "Manual cleanup failed: RunId={RunId}",
                 runId);
 
             return StatusCode(500, new
             {
-                Message = "Cleanup manifest validation failed."
+                Message = "Unable to complete manual cleanup."
             });
         }
-        catch (Exception ex) when (
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(
+                ex,
+                "Manual cleanup network error: RunId={RunId}",
+                runId);
+
+            return StatusCode(502, new
+            {
+                Message = "Unable to communicate with the Aras environment."
+            });
+        }
+                catch (Exception ex) when (
             ex is IOException or
             InvalidDataException or
             UnauthorizedAccessException or
@@ -1354,12 +1370,12 @@ public async Task<IActionResult> StartBenchmark(
         {
             _logger.LogError(
                 ex,
-                "Unable to prepare manual cleanup: RunId={RunId}",
+                "Manual cleanup encountered an error: RunId={RunId}",
                 runId);
 
             return StatusCode(500, new
             {
-                Message = "Unable to prepare manual cleanup."
+                Message = "Unable to complete manual cleanup."
             });
         }
 
