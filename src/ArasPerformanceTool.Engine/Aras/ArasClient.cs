@@ -2,6 +2,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Xml.Linq;
 using ArasPerformanceTool.Engine.Exceptions;
+using System.Net;
+using System.Text.Json;
 
 namespace ArasPerformanceTool.Engine.Aras;
 
@@ -11,86 +13,157 @@ public class ArasClient : IArasClient
     private readonly string _oauthServerUrl;
     private readonly string _database;
 
-    public ArasClient(HttpClient httpClient, string oauthServerUrl, string database)
+    // Constructor
+    public ArasClient(
+        HttpClient httpClient,
+        string oauthServerUrl,
+        string database)
     {
-        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        _oauthServerUrl = oauthServerUrl ?? throw new ArgumentNullException(nameof(oauthServerUrl));
-        _database = database ?? throw new ArgumentNullException(nameof(database));
+        _httpClient = httpClient
+            ?? throw new ArgumentNullException(nameof(httpClient));
+
+        _oauthServerUrl = oauthServerUrl
+            ?? throw new ArgumentNullException(nameof(oauthServerUrl));
+
+        _database = database
+            ?? throw new ArgumentNullException(nameof(database));
     }
 
-   public async Task<string> GetAccessTokenAsync(
+
+    public Task<string> GetAccessTokenAsync(
         string username,
         string password,
         CancellationToken cancellationToken = default)
     {
+        return GetAccessTokenAsync(
+            username,
+            password,
+            _database,
+            cancellationToken);
+    }
+
+    
+
+    public async Task<string> GetAccessTokenAsync(
+        string username,
+        string password,
+        string database,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(username);
+        ArgumentException.ThrowIfNullOrWhiteSpace(password);
+        ArgumentException.ThrowIfNullOrWhiteSpace(database);
+
         var parameters = new Dictionary<string, string>
         {
             ["grant_type"] = "password",
             ["client_id"] = "IOMApp",
             ["username"] = username,
             ["password"] = password,
-            ["database"] = _database,
+            ["database"] = database,
             ["scope"] = "Innovator"
         };
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, _oauthServerUrl)
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            _oauthServerUrl)
         {
             Content = new FormUrlEncodedContent(parameters)
         };
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await _httpClient.SendAsync(
+            request,
+            cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
+            var errorBody = await response.Content.ReadAsStringAsync(
+                cancellationToken);
+
+            string? oauthError = null;
+
+            try
+            {
+                using var errorJson = JsonDocument.Parse(errorBody);
+
+                if (errorJson.RootElement.ValueKind == JsonValueKind.Object &&
+                    errorJson.RootElement.TryGetProperty("error", out var errorProperty) &&
+                    errorProperty.ValueKind == JsonValueKind.String)
+                {
+                    oauthError = errorProperty.GetString();
+                }
+            }
+            catch (JsonException)
+            {
+                // The OAuth server returned a non-JSON error response.
+            }
+
+            // OAuth explicitly rejected the credentials.
+            if (response.StatusCode == HttpStatusCode.BadRequest &&
+                oauthError == "invalid_grant")
+            {
+                throw new ArasAuthenticationException(
+                    "Aras rejected the login credentials.");
+            }
+
+            // Other OAuth failures may indicate server or configuration problems.
             throw new HttpRequestException(
-                $"OAuth token request failed with HTTP status code {(int)response.StatusCode} ({response.StatusCode}).");
+                $"OAuth token request failed with HTTP status code " +
+                $"{(int)response.StatusCode} ({response.StatusCode}).",
+                inner: null,
+                statusCode: response.StatusCode);
         }
 
-        var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+        var responseJson = await response.Content.ReadAsStringAsync(
+            cancellationToken);
 
-        using var jsonDocument = System.Text.Json.JsonDocument.Parse(responseJson);
+        using var jsonDocument =
+            System.Text.Json.JsonDocument.Parse(responseJson);
+
         var root = jsonDocument.RootElement;
 
-        if (root.TryGetProperty("access_token", out var tokenProp))
+        if (root.TryGetProperty("access_token", out var tokenProp) &&
+            tokenProp.ValueKind == System.Text.Json.JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(tokenProp.GetString()))
         {
             return tokenProp.GetString()!;
         }
 
-        throw new InvalidOperationException("OAuth response does not contain a valid 'access_token'.");
+        throw new InvalidOperationException(
+            "OAuth response does not contain a valid 'access_token'.");
     }
-
-   public async Task<string> ExecuteAmlAsync(
-        string serverUrl,
-        string accessToken,
-        string aml,
-        CancellationToken cancellationToken = default)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, serverUrl);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Headers.Add("SOAPACTION", "ApplyAML");
-
-        var soapEnvelope = $@"<SOAP-ENV:Envelope xmlns:SOAP-ENV=""http://schemas.xmlsoap.org/soap/envelope/"">
-    <SOAP-ENV:Body>
-        <ApplyAML>{aml}</ApplyAML>
-    </SOAP-ENV:Body>
-    </SOAP-ENV:Envelope>";
-
-        request.Content = new StringContent(soapEnvelope, Encoding.UTF8, "text/xml");
-
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
+    public async Task<string> ExecuteAmlAsync(
+            string serverUrl,
+            string accessToken,
+            string aml,
+            CancellationToken cancellationToken = default)
         {
-            throw new HttpRequestException(
-                $"AML HTTP request failed with status code {(int)response.StatusCode} ({response.StatusCode}).");
+            using var request = new HttpRequestMessage(HttpMethod.Post, serverUrl);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            request.Headers.Add("SOAPACTION", "ApplyAML");
+
+            var soapEnvelope = $@"<SOAP-ENV:Envelope xmlns:SOAP-ENV=""http://schemas.xmlsoap.org/soap/envelope/"">
+        <SOAP-ENV:Body>
+            <ApplyAML>{aml}</ApplyAML>
+        </SOAP-ENV:Body>
+        </SOAP-ENV:Envelope>";
+
+            request.Content = new StringContent(soapEnvelope, Encoding.UTF8, "text/xml");
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"AML HTTP request failed with status code {(int)response.StatusCode} ({response.StatusCode}).");
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            EnsureSuccessAmlResponse(responseBody);
+
+            return responseBody;
         }
-
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-
-        EnsureSuccessAmlResponse(responseBody);
-
-        return responseBody;
-    }
 
     private static void EnsureSuccessAmlResponse(string xmlPayload)
     {

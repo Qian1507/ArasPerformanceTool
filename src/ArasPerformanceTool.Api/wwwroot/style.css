@@ -1,4 +1,3 @@
-
 /* =========================================================
    Aras Performance Benchmark Tool
    Main Stylesheet
@@ -38,6 +37,10 @@ body {
     display: none !important;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 /* Main Layout */
 .container {
     width: 100%;
@@ -69,21 +72,23 @@ body {
     gap: 22px;
 }
 
-/* Cards */
+/* Cards & Elevation */
 .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px;
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+    border-radius: 10px;
+    padding: 28px 24px;
+    box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.05),
+                0 2px 6px -1px rgba(15, 23, 42, 0.02);
 }
 
 .card h2 {
-    margin: 0 0 18px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border);
-    font-size: 20px;
+    margin: 0 0 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #edf2f7;
+    font-size: 18px;
     font-weight: 700;
+    color: #0f172a;
 }
 
 /* Form Layout */
@@ -110,20 +115,23 @@ select,
 textarea {
     width: 100%;
     min-width: 0;
-    padding: 10px 12px;
+    height: 40px;
+    padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 6px;
     background: #ffffff;
     color: var(--text-primary);
     font: inherit;
+    font-size: 13.5px;
     outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(52, 120, 212, 0.12);
+    box-shadow: 0 0 0 3px rgba(52, 120, 212, 0.15);
 }
 
 input:disabled,
@@ -136,6 +144,163 @@ select:disabled {
 input::placeholder,
 textarea::placeholder {
     color: #94a3b8;
+    font-size: 13px;
+}
+
+/* =========================================================
+   Aras Login Module (Refined)
+   ========================================================= */
+
+.login-card {
+    width: 100%;
+    max-width: 440px;
+    margin: 32px auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #ffffff;
+    box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.04),
+                0 8px 10px -6px rgba(15, 23, 42, 0.02);
+}
+
+.login-card h2 {
+    margin: 0 0 22px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 19px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+/* Icon Wrap */
+.input-with-icon,
+.select-with-icon {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+}
+
+.input-with-icon .field-icon,
+.select-with-icon .field-icon {
+    position: absolute;
+    left: 12px;
+    width: 16px;
+    height: 16px;
+    color: #94a3b8;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.input-with-icon input,
+.select-with-icon select {
+    padding-left: 36px;
+    height: 42px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 13.5px;
+}
+
+.select-with-icon {
+    flex: 1;
+}
+
+/* Database Row */
+.database-select-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Reload Button with Icon */
+.btn-reload {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 42px;
+    padding: 0 14px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-reload .reload-icon {
+    width: 14px;
+    height: 14px;
+    color: #475569;
+}
+
+.btn-reload:hover:not(:disabled) {
+    background: #f8fafc;
+    border-color: #94a3b8;
+    color: #0f172a;
+}
+
+.btn-reload:hover:not(:disabled) .reload-icon {
+    color: #0f172a;
+}
+
+.btn-reload:disabled {
+    opacity: 0.55;
+    background: #f1f5f9;
+    color: #94a3b8;
+    cursor: not-allowed;
+}
+
+/* Status Indicator Dot */
+.login-status {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    margin-bottom: 0;
+    font-size: 12px;
+    color: #64748b;
+    min-height: 18px;
+}
+
+.login-status:not(:empty) {
+    display: inline-flex;
+}
+
+.login-status:not(:empty)::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: #10b981;
+    flex-shrink: 0;
+}
+
+.login-status.login-status-error {
+    color: #b91c1c;
+}
+
+.login-status.login-status-error:not(:empty)::before {
+    background-color: #ef4444;
+}
+
+/* Submit Button */
+.login-card .btn-primary {
+    height: 42px;
+    margin-top: 6px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    background: #2563eb;
+    box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+}
+
+.login-card .btn-primary:hover:not(:disabled) {
+    background: #1d4ed8;
 }
 
 /* Execution Mode */
@@ -159,6 +324,7 @@ textarea::placeholder {
 
 #amlPayload {
     display: block;
+    height: auto;
     min-height: 190px;
     resize: vertical;
     padding: 14px;
@@ -210,10 +376,7 @@ textarea::placeholder {
     font-weight: 600;
     text-align: center;
     cursor: pointer;
-    transition:
-        background-color 0.15s ease,
-        border-color 0.15s ease,
-        opacity 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
 
 .btn-primary {
@@ -362,64 +525,7 @@ textarea::placeholder {
     gap: 12px;
 }
 
-/* Responsive Layout */
-@media (max-width: 720px) {
-    .container {
-        padding: 18px 12px 36px;
-    }
-
-    .header h1 {
-        font-size: 23px;
-    }
-
-    .card {
-        padding: 18px;
-    }
-
-    .metrics-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-}
-
-@media (max-width: 480px) {
-    .form-row,
-    .metrics-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .results-header {
-        align-items: flex-start;
-        flex-direction: column;
-    }
-
-    .action-buttons {
-        flex-direction: column;
-    }
-
-    .action-buttons .btn {
-        width: 100%;
-    }
-
-    .metric-value {
-        font-size: 21px;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .spinner {
-        animation-duration: 1.5s;
-    }
-
-    .btn {
-        transition: none;
-    }
-}
-
-
-/* =========================================================
-   CRUD Operation Verification
-   ========================================================= */
-
+/* CRUD Operation Verification */
 .verification-panel {
     background: #f8fafc;
     border: 1px solid var(--border);
@@ -484,10 +590,7 @@ textarea::placeholder {
     font-family: inherit;
 }
 
-/* =====================================================
-   Custom AML Query Result Details
-   ===================================================== */
-
+/* Custom AML Query Result Details */
 .aml-result-panel {
     margin-top: 24px;
     padding: 24px;
@@ -566,4 +669,67 @@ textarea::placeholder {
     border-radius: 8px;
     font-size: 12px;
     white-space: pre;
+}
+
+/* Responsive Layout */
+@media (max-width: 720px) {
+    .container {
+        padding: 18px 12px 36px;
+    }
+
+    .header h1 {
+        font-size: 23px;
+    }
+
+    .card {
+        padding: 18px;
+    }
+
+    .metrics-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 600px) {
+    .database-select-row {
+        flex-direction: column;
+    }
+
+    .database-select-row #reload-databases-btn {
+        width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    .form-row,
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .results-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .action-buttons {
+        flex-direction: column;
+    }
+
+    .action-buttons .btn {
+        width: 100%;
+    }
+
+    .metric-value {
+        font-size: 21px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .spinner {
+        animation-duration: 1.5s;
+    }
+
+    .btn {
+        transition: none;
+    }
 }

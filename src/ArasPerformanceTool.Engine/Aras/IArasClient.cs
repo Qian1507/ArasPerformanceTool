@@ -9,9 +9,22 @@ public interface IArasClient
     /// <param name="password">Aras plain text password.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Bearer access token string.</returns>
+    /// 
+    /// // Legacy authentication method.
+    // Uses the default Aras database configured in appsettings.json.
+    // Kept for backward compatibility with existing benchmarks and tests.
     Task<string> GetAccessTokenAsync(
         string username,
         string password,
+        CancellationToken cancellationToken = default);
+
+    // Authentication with a user-selected Aras database.
+    // Used by the Login API to authenticate against the database
+    // selected from the dynamically loaded database list.
+    Task<string> GetAccessTokenAsync(
+        string username,
+        string password,
+        string database,
         CancellationToken cancellationToken = default);
 
     /// <summary>

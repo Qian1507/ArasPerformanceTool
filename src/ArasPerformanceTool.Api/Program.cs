@@ -88,6 +88,26 @@ builder.Services.AddSingleton<RunExecutionCoordinator>();
 //register the PdfReportGenerator for dependency injection
 builder.Services.AddTransient<PdfReportGenerator>();
 
+// Server-side session for Aras authentication.
+builder.Services.AddDistributedMemoryCache();
+
+builder.Services.AddSession(options =>
+{
+    options.IdleTimeout = TimeSpan.FromMinutes(30);
+
+    options.Cookie.Name = ".ArasPerformanceTool.Session";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+});
+
+// Protect state-changing requests against CSRF.
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+});
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -95,6 +115,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+app.UseSession();
 // Serve the default page (index.html) when accessing the root URL
 app.UseDefaultFiles();
 

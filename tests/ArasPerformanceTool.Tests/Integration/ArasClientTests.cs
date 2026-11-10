@@ -67,29 +67,23 @@ public sealed class ArasClientTests
                  && (string?)e.Attribute("type") == "Part");
     }
 
-    [Fact]
+   [Fact]
     public async Task GetAccessTokenAsync_ShouldThrow_WhenPasswordIsWrong()
     {
         // Arrange
         const string wrongPassword =
             "InvalidPassword_ForTesting_123!";
 
-        // Act & Assert
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(
+        // Act
+        var exception = await Assert.ThrowsAsync<ArasAuthenticationException>(
             () => _aras.Client.GetAccessTokenAsync(
                 _aras.Username,
                 wrongPassword));
 
-        Assert.False(string.IsNullOrWhiteSpace(exception.Message));
-
-        if (exception.StatusCode is not null)
-        {
-            Assert.True(
-                exception.StatusCode is
-                    HttpStatusCode.BadRequest or
-                    HttpStatusCode.Unauthorized,
-                $"Unexpected HTTP status: {exception.StatusCode}");
-        }
+        // Assert
+        Assert.Equal(
+            "Aras rejected the login credentials.",
+            exception.Message);
     }
 
     [Fact]

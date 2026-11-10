@@ -8,6 +8,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const byId = id => document.getElementById(id);
 
+    // Aras Login
+    const loginForm = byId("login-form");
+    const arasUsername = byId("arasUsername");
+    const arasPassword = byId("arasPassword");
+    const arasDatabase = byId("arasDatabase");
+    const loginSection = byId("login-section");
+    const dashboardSection = byId("dashboard-section");
+
+    const reloadDatabasesBtn = byId("reload-databases-btn");
+    const databaseStatus = byId("database-status");
+    const loginStatus = byId("login-status");
+    const loginBtn = byId("login-btn");
+
+    let databasesLoading = false;
+
     const form = byId("benchmark-form");
     const benchmarkMode = byId("benchmarkMode");
 
@@ -72,6 +87,269 @@ document.addEventListener("DOMContentLoaded", () => {
     const cleanPendingRunBtn = byId("clean-pending-run");
     const pendingCleanupResult = byId("pending-cleanup-result");
 
+    // =====================================================
+    // Aras Database Selection
+    // =====================================================
+
+    function setDatabasePlaceholder(text) {
+        const option = document.createElement("option");
+
+        option.value = "";
+        option.textContent = text;
+        option.selected = true;
+
+        arasDatabase.replaceChildren(option);
+    }
+
+    async function loadDatabases() {
+        if (databasesLoading) {
+            return;
+        }
+
+        const previousDatabase = arasDatabase.value;
+
+        databasesLoading = true;
+        arasDatabase.disabled = true;
+        reloadDatabasesBtn.disabled = true;
+        loginBtn.disabled = true;
+
+        databaseStatus.classList.remove("login-status-error");
+        databaseStatus.textContent = "Loading Aras databases...";
+
+        setDatabasePlaceholder("Loading databases...");
+
+        try {
+            const response = await fetch("/api/auth/databases", {
+                cache: "no-store",
+                headers: {
+                    "Accept": "application/json"
+                }
+            });
+
+            let data;
+
+            try {
+                data = await response.json();
+            } catch {
+                throw new Error(
+                    `Invalid database list response (HTTP ${response.status}).`
+                );
+            }
+
+            if (!response.ok) {
+                throw new Error(
+                    data?.message ||
+                    `Unable to load databases (HTTP ${response.status}).`
+                );
+            }
+
+            if (!Array.isArray(data?.databases)) {
+                throw new Error(
+                    "The server returned an invalid database list."
+                );
+            }
+
+            const databases = [
+                ...new Set(
+                    data.databases
+                        .filter(value => typeof value === "string")
+                        .map(value => value.trim())
+                        .filter(Boolean)
+                )
+            ];
+
+            if (databases.length === 0) {
+                throw new Error(
+                    "No selectable Aras databases are available."
+                );
+            }
+
+            arasDatabase.replaceChildren();
+
+            // Multiple databases require an explicit selection.
+            if (databases.length > 1) {
+                const placeholder = document.createElement("option");
+
+                placeholder.value = "";
+                placeholder.textContent = "Select a database...";
+                placeholder.selected = true;
+                placeholder.disabled = true;
+
+                arasDatabase.appendChild(placeholder);
+            }
+
+            for (const database of databases) {
+                const option = document.createElement("option");
+
+                option.value = database;
+                option.textContent = database;
+
+                arasDatabase.appendChild(option);
+            }
+
+            if (databases.includes(previousDatabase)) {
+                arasDatabase.value = previousDatabase;
+            } else if (databases.length === 1) {
+                arasDatabase.value = databases[0];
+            } else {
+                arasDatabase.value = "";
+            }
+
+            arasDatabase.disabled = false;
+
+            databaseStatus.textContent =
+                databases.length === 1
+                    ? "1 database available."
+                    : `${databases.length} databases available.`;
+        } catch (error) {
+            setDatabasePlaceholder("Unable to load databases");
+
+            databaseStatus.textContent =
+                error instanceof Error
+                    ? error.message
+                    : "Unable to load Aras databases.";
+
+            databaseStatus.classList.add("login-status-error");
+        } finally {
+            databasesLoading = false;
+            reloadDatabasesBtn.disabled = false;
+
+            // Enable login only when a valid database is selected.
+            loginBtn.disabled = arasDatabase.disabled || !arasDatabase.value;
+        }
+    }
+
+    reloadDatabasesBtn.addEventListener("click", loadDatabases);
+
+    // Prevent accidental form submission before login is implemented.
+    loginForm.addEventListener("submit", loginToAras);
+
+    arasDatabase.addEventListener("change", () => {
+        loginBtn.disabled =
+            databasesLoading ||
+            arasDatabase.disabled ||
+            !arasDatabase.value;
+    });
+
+    // =====================================================
+    // Aras Login
+    // =====================================================
+
+    // Show only the appropriate section for the login state.
+    function setAuthenticatedUI(authenticated) {
+        loginSection.hidden = authenticated;
+        dashboardSection.hidden = !authenticated;
+    }
+
+    async function getCsrfToken() {
+        const response = await fetch("/api/auth/csrf", {
+            credentials: "same-origin",
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error("Failed to get CSRF token.");
+        }
+
+        const data = await response.json();
+
+        if (!data?.requestToken) {
+            throw new Error("CSRF token is missing.");
+        }
+
+        return data.requestToken;
+    }
+
+    async function loginToAras(event) {
+        event.preventDefault();
+
+        if (databasesLoading || !arasDatabase.value) {
+            return;
+        }
+
+        loginBtn.disabled = true;
+        loginStatus.classList.remove("login-status-error");
+        loginStatus.textContent = "Connecting to Aras...";
+
+        try {
+            const csrfToken = await getCsrfToken();
+
+            const response = await fetch("/api/auth/login", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRF-TOKEN": csrfToken
+                },
+                body: JSON.stringify({
+                    username: arasUsername.value.trim(),
+                    password: arasPassword.value,
+                    database: arasDatabase.value
+                })
+            });
+
+            let result;
+
+            try {
+                result = await response.json();
+            } catch {
+                throw new Error(
+                    `Invalid login response (HTTP ${response.status}).`
+                );
+            }
+
+            if (!response.ok) {
+                throw new Error(
+                    result?.message ||
+                    `Aras login failed (HTTP ${response.status}).`
+                );
+            }
+
+            if (result?.authenticated !== true) {
+                throw new Error("Login was not confirmed by the server.");
+            }
+
+            loginStatus.textContent =
+                `Connected to ${result.database} as ${result.username}.`;
+                setAuthenticatedUI(true);
+
+            // Dashboard switching will be implemented later.
+        } catch (error) {
+            loginStatus.textContent =
+                error instanceof Error
+                    ? error.message
+                    : "Unable to connect to Aras.";
+
+            loginStatus.classList.add("login-status-error");
+        } finally {
+            // Never keep the password after a login attempt.
+            arasPassword.value = "";
+
+            loginBtn.disabled =
+                databasesLoading ||
+                arasDatabase.disabled ||
+                !arasDatabase.value;
+        }
+    }
+    async function restoreSession() {
+    try {
+        const response = await fetch("/api/auth/session", {
+            credentials: "same-origin",
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error("Unable to check login session.");
+        }
+
+        const session = await response.json();
+
+        setAuthenticatedUI(session.authenticated === true);
+    } catch (error) {
+        console.error("Session check failed:", error);
+        setAuthenticatedUI(false);
+    }
+}
     // =====================================================
     // 2. Benchmark Mode and Operation Description
     // =====================================================
@@ -1146,4 +1424,8 @@ function renderAmlQueryResults(queryResult) {
     updateOperationDescription();
     updateAmlStatus();
     clearResults();
+
+    loadDatabases();
+    restoreSession();
+
 });
