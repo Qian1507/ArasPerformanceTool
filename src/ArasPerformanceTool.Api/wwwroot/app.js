@@ -781,11 +781,11 @@ function renderAmlQueryResults(queryResult) {
     }
 
     downloadJsonBtn.addEventListener("click", () => {
-        downloadReport("json");
+        downloadReport("summary-pdf");
     });
 
     downloadCsvBtn.addEventListener("click", () => {
-        downloadReport("csv");
+        downloadReport("measurements-pdf");
     });
 
 

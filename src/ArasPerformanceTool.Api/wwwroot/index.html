@@ -157,10 +157,28 @@
 
                 <div class="export-actions">
                     <h3>Export Performance Reports</h3>
+
                     <div class="action-buttons">
-                        <button id="download-json-btn" class="btn btn-secondary">Download JSON</button>
-                        <button id="download-csv-btn" class="btn btn-secondary">Download CSV</button>
+                        <button
+                            type="button"
+                            id="download-json-btn"
+                            class="btn btn-secondary"
+                            disabled>
+                            Download Summary PDF
+                        </button>
+
+                        <button
+                            type="button"
+                            id="download-csv-btn"
+                            class="btn btn-secondary"
+                            disabled>
+                            Download Measurements PDF
+                        </button>
                     </div>
+
+                    <p class="export-description">
+                        Based on saved JSON summary and CSV measurements.
+                    </p>
                 </div>
             </section>
             

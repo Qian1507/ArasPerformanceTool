@@ -4,6 +4,12 @@ using ArasPerformanceTool.Engine.Storage;
 using ArasPerformanceTool.Engine.Benchmarking.Workloads;
 using ArasPerformanceTool.Engine.Benchmarking;
 using ArasPerformanceTool.Api.Services;
+using QuestPDF.Infrastructure;
+using ArasPerformanceTool.Api.Reporting;
+
+// Community license for development and evaluation.
+// Reassess licensing before company production deployment.
+QuestPDF.Settings.License = LicenseType.Community;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -78,6 +84,9 @@ builder.Services.AddTransient<DeleteWorkload>();
 
 // Register the RunExecutionCoordinator as a singleton
 builder.Services.AddSingleton<RunExecutionCoordinator>();
+
+//register the PdfReportGenerator for dependency injection
+builder.Services.AddTransient<PdfReportGenerator>();
 
 var app = builder.Build();
 

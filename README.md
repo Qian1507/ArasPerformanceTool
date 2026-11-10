@@ -55,3 +55,19 @@ Implementation of the benchmarking engine, AML execution, performance measuremen
 ## Project Purpose
 
 This project is developed as a practical learning and development exercise focused on .NET application architecture, Aras Innovator integration, and performance benchmarking.
+
+
+
+## Third-Party Licenses
+
+### QuestPDF
+
+This project uses [QuestPDF](https://www.questpdf.com/) to generate PDF performance reports.
+
+- **Configured license type:** Community.
+- **Current usage:** Development, testing, and technical evaluation during the LIA project, subject to the applicable license terms.
+- **Company use:** License eligibility must be confirmed before production or regular business use.
+
+**Important:** Configuring the Community license type does not by itself establish license eligibility. Before production or regular business use, verify whether the company qualifies for the QuestPDF Community License. If not, an appropriate commercial license or an alternative PDF library is required. Any applicable evaluation time limit must also be observed.
+
+For details, see the [QuestPDF License Selection Guide](https://www.questpdf.com/license/guide.html) and the [QuestPDF Licensing Documentation](https://www.questpdf.com/license/).
