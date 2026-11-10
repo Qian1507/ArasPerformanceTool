@@ -871,13 +871,32 @@ public async Task<IActionResult> StartBenchmark(
             // 7. Evaluate and Save Benchmark Report
             // =================================================
 
-            if (report is null)
+             if (report is null)
             {
                 throw new InvalidOperationException(
                     "Benchmark report was not generated.");
             }
 
+            var reportOperation = action.ToLowerInvariant() switch
+            {
+                "add" or "create" => "Create",
+                "get" or "read" => "Read",
+                "edit" or "update" => "Update",
+                "delete" => "Delete",
+                _ => throw new InvalidOperationException(
+                    $"Unsupported report operation: '{action}'.")
+            };
+
+            report = report with
+            {
+                RunId = jobId.ToString("N"),
+                Mode = isRawAml ? "CustomAml" : "Standard",
+                Operation = reportOperation
+            };
+
             statistics = report.Statistics;
+
+
 
             
             if (statistics.FailureCount > 0)

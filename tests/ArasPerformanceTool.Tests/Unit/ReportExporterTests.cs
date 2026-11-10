@@ -144,5 +144,130 @@ public class ReportExporterTests
         // Assert: Formula-like values are prefixed with an apostrophe
         Assert.Contains(expectedSubstring, csv);
     }
+    [Fact]
+    public void BenchmarkReport_ShouldPreserveMetadata_AfterSerialization()
+    {
+        // Arrange
+        const string runId = "333416a8216945edbbccefc501ade4e1";
+        const string mode = "Standard";
+        const string operation = "Read";
 
+        var sampleJson = ReportExporter.ExportJson(CreateSampleReport());
+
+        var reportNode = System.Text.Json.Nodes.JsonNode
+            .Parse(sampleJson)!
+            .AsObject();
+
+        reportNode["runId"] = runId;
+        reportNode["mode"] = mode;
+        reportNode["operation"] = operation;
+
+        var originalReport = JsonSerializer.Deserialize<BenchmarkReport>(
+            reportNode.ToJsonString(),
+            JsonOptions);
+
+        Assert.NotNull(originalReport);
+        Assert.Equal(runId, originalReport.RunId);
+        Assert.Equal(mode, originalReport.Mode);
+        Assert.Equal(operation, originalReport.Operation);
+
+        // Act
+        var json = ReportExporter.ExportJson(originalReport);
+
+        var restoredReport = JsonSerializer.Deserialize<BenchmarkReport>(
+            json,
+            JsonOptions);
+
+        // Assert: exported JSON contains the metadata
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        Assert.Equal(runId, root.GetProperty("runId").GetString());
+        Assert.Equal(mode, root.GetProperty("mode").GetString());
+        Assert.Equal(operation, root.GetProperty("operation").GetString());
+
+        // Assert: metadata survives the round trip
+        Assert.NotNull(restoredReport);
+        Assert.Equal(runId, restoredReport.RunId);
+        Assert.Equal(mode, restoredReport.Mode);
+        Assert.Equal(operation, restoredReport.Operation);
+
+        Assert.Equal(originalReport.WorkloadName, restoredReport.WorkloadName);
+        Assert.Equal(
+            originalReport.Configuration.ItemType,
+            restoredReport.Configuration.ItemType);
+        Assert.Equal(
+            originalReport.RawMeasurements.Count,
+            restoredReport.RawMeasurements.Count);
+    }
+    [Fact]
+    public void BenchmarkReport_ShouldDeserializeLegacyJson_WithoutMetadata()
+    {
+        // Arrange
+        const string legacyJson = """
+        {
+        "workloadName": "CreatePartBenchmark",
+        "configuration": {
+            "itemType": "Part",
+            "iterations": 2,
+            "concurrency": 1
+        },
+        "statistics": {
+            "totalRequests": 2,
+            "successCount": 2,
+            "failureCount": 0,
+            "totalDurationSeconds": 0.5,
+            "throughputRequestsPerSecond": 4.0,
+            "minMs": 100.5,
+            "maxMs": 150.2,
+            "averageMs": 125.35,
+            "p50Ms": 100.5,
+            "p95Ms": 150.2,
+            "p99Ms": 150.2
+        },
+        "rawMeasurements": [
+            {
+            "elapsedMilliseconds": 100.5,
+            "isSuccess": true,
+            "errorMessage": null
+            },
+            {
+            "elapsedMilliseconds": 150.2,
+            "isSuccess": true,
+            "errorMessage": null
+            }
+        ]
+        }
+        """;
+
+        // Act
+        var report = JsonSerializer.Deserialize<BenchmarkReport>(
+            legacyJson,
+            JsonOptions);
+
+        // Assert: existing report data remains readable
+        Assert.NotNull(report);
+        Assert.Equal("CreatePartBenchmark", report.WorkloadName);
+
+        Assert.Equal("Part", report.Configuration.ItemType);
+        Assert.Equal(2, report.Configuration.Iterations);
+        Assert.Equal(1, report.Configuration.Concurrency);
+
+        Assert.Equal(2, report.Statistics.TotalRequests);
+        Assert.Equal(2, report.Statistics.SuccessCount);
+        Assert.Equal(0, report.Statistics.FailureCount);
+        Assert.Equal(125.35, report.Statistics.AverageMs);
+
+        Assert.Equal(2, report.RawMeasurements.Count);
+        Assert.All(report.RawMeasurements, measurement =>
+        {
+            Assert.True(measurement.IsSuccess);
+            Assert.Null(measurement.ErrorMessage);
+        });
+
+        // Assert: missing metadata is not invented
+        Assert.Null(report.RunId);
+        Assert.Null(report.Mode);
+        Assert.Null(report.Operation);
+    }
 }

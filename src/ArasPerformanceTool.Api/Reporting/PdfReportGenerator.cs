@@ -20,6 +20,9 @@ public sealed class PdfReportGenerator
 
         var fields = new (string Label, string Value)[]
         {
+            ("Run ID", GetValue(report, "RunId")),
+            ("Mode", GetValue(report, "Mode")),
+            ("Operation", GetValue(report, "Operation")),
             ("Workload", GetValue(report, "WorkloadName")),
             ("Item Type", GetValue(configuration, "ItemType")),
             ("Iterations", GetValue(configuration, "Iterations")),
@@ -147,11 +150,22 @@ public sealed class PdfReportGenerator
         throw new InvalidDataException($"Missing report section: {name}");
     }
 
-    private static string GetValue(JsonElement parent, string name)
+   private static string GetValue(
+        JsonElement parent,
+        string name)
     {
-        return TryGetProperty(parent, name, out var value)
-            ? value.ToString()
-            : "-";
+        if (!TryGetProperty(parent, name, out var value) ||
+            value.ValueKind is JsonValueKind.Null
+                or JsonValueKind.Undefined)
+        {
+            return "Not recorded";
+        }
+
+        var text = value.ToString();
+
+        return string.IsNullOrWhiteSpace(text)
+            ? "Not recorded"
+            : text;
     }
 
     private static bool TryGetProperty(
