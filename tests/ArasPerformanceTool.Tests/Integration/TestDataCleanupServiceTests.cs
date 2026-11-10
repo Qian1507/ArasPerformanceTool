@@ -441,7 +441,7 @@ public sealed class TestDataCleanupServiceTests
 
     
     [Fact]
-    public async Task CleanupAsync_WhenReloadedAfterFailure_DeletesRemainingItems()
+    public async Task CleanupAsync_WhenReloadedAfterCancellation_DeletesRemainingItems()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -517,6 +517,18 @@ public sealed class TestDataCleanupServiceTests
 
             Assert.Single(reloaded.UnresolvedItems);
 
+            var store = new TestDataManifestStore(directory);
+
+            var pendingScan = store.Scan(ArasFixture.EnvironmentId);
+
+            Assert.Empty(pendingScan.Errors);
+
+            var pendingRun = Assert.Single(
+                pendingScan.PendingRuns,
+                x => x.RunId == runId);
+
+            Assert.Equal(1, pendingRun.RemainingCount);
+
             // Retry cleanup with a fresh cancellation token.
             var retryResult = await cleanupService.CleanupAsync(
                 reloaded,
@@ -559,6 +571,16 @@ public sealed class TestDataCleanupServiceTests
                     TrackedItemStatus.Deleted,
                     TrackedItemStatus.AlreadyMissing
                 });
+
+            Assert.True(File.Exists(manifestPath));
+
+            var finalScan = store.Scan(ArasFixture.EnvironmentId);
+
+            Assert.Empty(finalScan.Errors);
+
+            Assert.DoesNotContain(
+                finalScan.PendingRuns,
+                x => x.RunId == runId);
 
             testPassed = true;
         }
