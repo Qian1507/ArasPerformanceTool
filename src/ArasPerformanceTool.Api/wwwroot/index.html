@@ -105,6 +105,24 @@
             <!-- Dashboard: visible only after login -->
             <div id="dashboard-section" hidden>
 
+                <!-- Current Aras Session -->
+                <div id="session-bar" class="session-bar">
+                    <span id="session-info"></span>
+
+                    <button
+                        type="button"
+                        id="logout-btn"
+                        class="btn btn-secondary">
+                        Logout
+                    </button>
+
+                    <p
+                        id="logout-status"
+                        class="login-status"
+                        role="status"
+                        aria-live="polite"></p>
+                </div>
+
             <!-- Configuration Section -->
             <section class="card config-card">
                 <h2>Benchmark Configuration</h2>

@@ -3,7 +3,7 @@
 
 document.addEventListener("DOMContentLoaded", () => {
 // =====================================================
-    // 1. DOM Elements
+    // 1. DOM References
     // =====================================================
 
     const byId = id => document.getElementById(id);
@@ -21,8 +21,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const loginStatus = byId("login-status");
     const loginBtn = byId("login-btn");
 
-    let databasesLoading = false;
+    const sessionInfo = byId("session-info");
+    const logoutBtn = byId("logout-btn");
+    const logoutStatus = byId("logout-status");
 
+   
     const form = byId("benchmark-form");
     const benchmarkMode = byId("benchmarkMode");
 
@@ -64,8 +67,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const vPanel = byId("verification-panel");
     const vContent = byId("verification-content");
 
-    let currentJobId = null;
-    let submitting = false;
 
     // Pending Cleanup panel
     const refreshPendingCleanupBtn = byId("refresh-pending-cleanup");
@@ -77,15 +78,25 @@ document.addEventListener("DOMContentLoaded", () => {
     const pendingCleanupPreviewMessage =
         byId("pending-cleanup-preview-message");
     const pendingCleanupItems = byId("pending-cleanup-items");
+     const cleanPendingRunBtn = byId("clean-pending-run");
+    const pendingCleanupResult = byId("pending-cleanup-result");
 
+    // Authentication
+    let databasesLoading = false;
+    let loggingOut = false;
+    // Benchmark execution
+    let currentJobId = null;
+    let submitting = false;
+    
+    // Pending cleanup
     let pendingCleanupLoading = false;
+    let pendingCleanupRunning = false;
+    let selectedCleanupRunId = null;
+
+    // Used to ignore outdated cleanup preview responses.
     let cleanupPreviewRequestId = 0;
 
-    let selectedCleanupRunId = null;
-    let pendingCleanupRunning = false;
 
-    const cleanPendingRunBtn = byId("clean-pending-run");
-    const pendingCleanupResult = byId("pending-cleanup-result");
 
     // =====================================================
     // Aras Database Selection
@@ -221,9 +232,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     reloadDatabasesBtn.addEventListener("click", loadDatabases);
 
-    // Prevent accidental form submission before login is implemented.
+    // Aras Login / Logout event handlers
     loginForm.addEventListener("submit", loginToAras);
-
+    logoutBtn.addEventListener("click", logoutFromAras);
+    
     arasDatabase.addEventListener("change", () => {
         loginBtn.disabled =
             databasesLoading ||
@@ -311,7 +323,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
             loginStatus.textContent =
                 `Connected to ${result.database} as ${result.username}.`;
-                setAuthenticatedUI(true);
+
+            sessionInfo.textContent =
+                `${result.username} · ${result.database}`;
+
+            setAuthenticatedUI(true);
 
             // Dashboard switching will be implemented later.
         } catch (error) {
@@ -331,6 +347,56 @@ document.addEventListener("DOMContentLoaded", () => {
                 !arasDatabase.value;
         }
     }
+
+    // =====================================================
+    // Aras Logout
+    // =====================================================
+
+    async function logoutFromAras() {
+        if (loggingOut) return;
+
+        loggingOut = true;
+        logoutBtn.disabled = true;
+        logoutStatus.textContent = "Logging out...";
+        logoutStatus.classList.remove("login-status-error");
+
+        try {
+            const csrfToken = await getCsrfToken();
+
+            const response = await fetch("/api/auth/logout", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "X-CSRF-TOKEN": csrfToken
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`Logout failed (HTTP ${response.status}).`);
+            }
+
+            // Clear UI state after the server confirms logout.
+            sessionInfo.textContent = "";
+            loginStatus.textContent = "";
+            logoutStatus.textContent = "";
+            arasPassword.value = "";
+
+            setAuthenticatedUI(false);
+
+            // Refresh available databases for the next login.
+            await loadDatabases();
+        } catch (error) {
+            logoutStatus.textContent =
+                error instanceof Error
+                    ? error.message
+                    : "Unable to log out.";
+
+            logoutStatus.classList.add("login-status-error");
+        } finally {
+            loggingOut = false;
+            logoutBtn.disabled = false;
+        }
+    }
     async function restoreSession() {
     try {
         const response = await fetch("/api/auth/session", {
@@ -343,8 +409,14 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const session = await response.json();
+        const authenticated = session.authenticated === true;
 
-        setAuthenticatedUI(session.authenticated === true);
+        sessionInfo.textContent = authenticated
+            ? `${session.username} · ${session.database}`
+            : "";
+
+        setAuthenticatedUI(authenticated);
+
     } catch (error) {
         console.error("Session check failed:", error);
         setAuthenticatedUI(false);
@@ -1274,11 +1346,6 @@ function renderAmlQueryResults(queryResult) {
                     selectedCleanupRunId = null;
                     cleanPendingRunBtn.disabled = true;
 
-                    if (pendingCleanupRunning) return;
-
-                    selectedCleanupRunId = null;
-                    cleanPendingRunBtn.disabled = true;
-
                     loadPendingCleanupRun(run.runId);
                 });
 
@@ -1420,11 +1487,18 @@ function renderAmlQueryResults(queryResult) {
 
     amlPayload.addEventListener("input", updateAmlStatus);
 
+     // =====================================================
+    //  Initialization
+    // =====================================================
+
+    // Initialize benchmark form and reset previous results.
     updateMode();
     updateOperationDescription();
     updateAmlStatus();
     clearResults();
 
+    // Initialize authentication.
+    // Database loading and session restoration are independent.
     loadDatabases();
     restoreSession();
 

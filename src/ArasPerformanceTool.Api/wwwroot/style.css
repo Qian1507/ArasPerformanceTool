@@ -733,3 +733,46 @@ textarea::placeholder {
         transition: none;
     }
 }
+
+/* Current Aras Session */
+.session-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+}
+
+#session-info {
+    flex: 1;
+    min-width: 0;
+    color: #475569;
+    font-size: 0.95rem;
+    overflow-wrap: anywhere;
+}
+
+#logout-btn {
+    flex: 0 0 auto;
+    width: auto;
+    margin: 0;
+    white-space: nowrap;
+}
+
+#logout-status {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.875rem;
+    overflow-wrap: anywhere;
+}
+
+#logout-status:empty {
+    display: none;
+}
+
+#logout-status.login-status-error {
+    color: #b91c1c;
+}
