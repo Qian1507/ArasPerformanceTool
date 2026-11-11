@@ -208,28 +208,48 @@ public class BenchmarkControllerTests
             Times.AtLeastOnce);
     }
 
-    [Fact]
+   [Fact]
     public async Task StartBenchmark_WithoutSession_ReturnsUnauthorized()
     {
-        using var client = _factory.CreateClient();
-
         var request = new StartBenchmarkRequest
         {
             ItemType = "Part",
             Iterations = 1,
-            Concurrency = 1,
-            WorkloadName = "UnauthorizedTest"
+            Concurrency = 1
         };
 
-        var response = await client.PostAsJsonAsync(
+        var csrfToken = await GetCsrfTokenAsync();
+
+        var response = await PostWithCsrfAsync(
             "/api/benchmark",
-            request);
+            request,
+            csrfToken);
 
         Assert.Equal(
             HttpStatusCode.Unauthorized,
             response.StatusCode);
     }
 
+    [Fact]
+    public async Task StartBenchmark_WithoutCsrfToken_ReturnsBadRequest()
+    {
+        await LoginAsync();
+
+        var request = new StartBenchmarkRequest
+        {
+            ItemType = "Part",
+            Iterations = 1,
+            Concurrency = 1
+        };
+
+        var response = await _client.PostAsJsonAsync(
+            "/api/benchmark",
+            request);
+
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            response.StatusCode);
+    }
     private async Task LoginAsync()
     {
         var configuration = _factory.Services
@@ -408,4 +428,5 @@ public class BenchmarkControllerTests
             return Task.FromResult(response);
         }
     }
+
 }

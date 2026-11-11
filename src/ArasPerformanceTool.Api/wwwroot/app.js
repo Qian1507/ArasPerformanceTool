@@ -130,6 +130,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setDatabasePlaceholder("Loading databases...");
 
         try {
+            const csrfToken = await getCsrfToken();
             const response = await fetch("/api/auth/databases", {
                 cache: "no-store",
                 headers: {
@@ -1063,14 +1064,19 @@ function renderAmlQueryResults(queryResult) {
             payload.action = operation.value;
         }
 
-        clearResults();
+       clearResults();
         setBusy(true);
 
         try {
+            // Obtain a CSRF token before submitting the benchmark.
+            const csrfToken = await getCsrfToken();
+
             const response = await fetch("/api/benchmark", {
                 method: "POST",
+                credentials: "same-origin",
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "X-CSRF-TOKEN": csrfToken
                 },
                 body: JSON.stringify(payload)
             });

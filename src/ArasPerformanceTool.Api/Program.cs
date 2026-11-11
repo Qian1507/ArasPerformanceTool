@@ -14,7 +14,8 @@ QuestPDF.Settings.License = LicenseType.Community;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
-builder.Services.AddControllers();
+//builder.Services.AddControllers();
+builder.Services.AddControllersWithViews();
 
 // Register HttpClient
 builder.Services.AddHttpClient("Aras");

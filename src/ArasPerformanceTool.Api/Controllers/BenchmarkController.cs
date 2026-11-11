@@ -57,6 +57,7 @@ public class BenchmarkController : ControllerBase
     /// Runs a standard CRUD or custom read-only AML benchmark.
     /// </summary>
     [HttpPost]
+    [ValidateAntiForgeryToken]
     [ProducesResponseType(
         typeof(BenchmarkStatusResponse),
         StatusCodes.Status200OK)]
