@@ -211,9 +211,38 @@ public async Task<IActionResult> StartBenchmark(
         }
 
    
+        
+        // =====================================================
+        // 2. Validate Current Aras Session
+        // =====================================================
+
+        // Authenticate before acquiring the execution coordinator.
+        // A missing session must not create or reserve a benchmark job.
+        await HttpContext.Session.LoadAsync(
+            HttpContext.RequestAborted);
+
+        var token = HttpContext.Session.GetString(
+            "Aras.AccessToken");
+
+        var database = HttpContext.Session.GetString(
+            "Aras.Database");
+
+        var username = HttpContext.Session.GetString(
+            "Aras.Username");
+
+        if (string.IsNullOrWhiteSpace(token) ||
+            string.IsNullOrWhiteSpace(database) ||
+            string.IsNullOrWhiteSpace(username))
+        {
+            return Unauthorized(new
+            {
+                message =
+                    "Please sign in to Aras before running a benchmark."
+            });
+        }
 
         // =====================================================
-        // 2. Initialize Benchmark
+        // 3. Initialize Benchmark
         // =====================================================
 
         var jobId = Guid.NewGuid();
@@ -240,40 +269,26 @@ public async Task<IActionResult> StartBenchmark(
         string? errorMessage = null;
 
         try
-        {
+        {        
             // =================================================
-            // 3. Connect to Aras
+            // 4. Configure Current Aras Environment
             // =================================================
+
+            // The database and access token were obtained from
+            // the authenticated session before the job started.
+            // Do not request a new OAuth token here.
 
             var serverUrl = _configuration["Aras:ServerUrl"]
                 ?? throw new InvalidOperationException(
                     "Aras Server URL is missing.");
-            
-            // Identify the Aras environment used by this benchmark.
-            // Both server and database matter.
-            var database = _configuration["Aras:Database"]
-                ?? throw new InvalidOperationException(
-                    "Aras Database is missing.");
 
+            // Bind tracked test data to the selected Aras environment.
+            // Cleanup must use the same environment identifier.
             var environmentId =
                 $"{serverUrl.TrimEnd('/')}|{database}";
 
-            var username = _configuration["ARAS_USERNAME"];
-            var password = _configuration["ARAS_PASSWORD"];
-
-            if (string.IsNullOrWhiteSpace(username) ||
-                string.IsNullOrWhiteSpace(password))
-            {
-                throw new InvalidOperationException(
-                    "Aras credentials are not configured.");
-            }
-
-            var token = await _arasClient.GetAccessTokenAsync(
-                username,
-                password);
-
             // =================================================
-            // Manifest Storage Configuration
+            // 5. Manifest Storage Configuration
             // =================================================
 
             var dataDirectory = _configuration["Storage:DataDirectory"]
@@ -294,7 +309,7 @@ public async Task<IActionResult> StartBenchmark(
 
 
             // =================================================
-            // Benchmark Configuration
+            // 6. Benchmark Configuration
             // =================================================
             
             var runner = new BenchmarkRunner();          
@@ -305,7 +320,7 @@ public async Task<IActionResult> StartBenchmark(
                 request.Concurrency);
 
             // =================================================
-            // 4. Custom AML Benchmark 
+            // 7. Custom AML Benchmark 
             // =================================================
 
             if (isRawAml)
@@ -345,7 +360,7 @@ public async Task<IActionResult> StartBenchmark(
             else
             {
                 // =============================================
-                // 5. Standard CRUD Benchmark
+                // 8. Standard CRUD Benchmark
                 // =============================================
 
                
@@ -868,7 +883,7 @@ public async Task<IActionResult> StartBenchmark(
             }
 
             // =================================================
-            // 7. Evaluate and Save Benchmark Report
+            // 9. Evaluate and Save Benchmark Report
             // =================================================
 
              if (report is null)
@@ -956,7 +971,7 @@ public async Task<IActionResult> StartBenchmark(
             }
 
             // =====================================================
-            // 8. Build API Response
+            // 10. Build API Response
             // =====================================================
 
         var response = new BenchmarkStatusResponse(
@@ -1421,7 +1436,7 @@ public async Task<IActionResult> StartBenchmark(
     }
 
     // =========================================================
-    // 9. XML Helpers
+    // 10. XML Helpers
     // =========================================================
 
     /// <summary>
