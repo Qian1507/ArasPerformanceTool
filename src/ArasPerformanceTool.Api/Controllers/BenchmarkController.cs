@@ -1222,6 +1222,29 @@ public async Task<IActionResult> StartBenchmark(
     [HttpPost("pending-cleanup/{runId:guid}/cleanup")]
     public async Task<IActionResult> CleanupPendingRun(Guid runId)
     {
+        // Validate the current Aras session before acquiring the Run lock.
+        await HttpContext.Session.LoadAsync(
+            HttpContext.RequestAborted);
+
+        var token = HttpContext.Session.GetString(
+            "Aras.AccessToken");
+
+        var database = HttpContext.Session.GetString(
+            "Aras.Database");
+
+        var username = HttpContext.Session.GetString(
+            "Aras.Username");
+
+        if (string.IsNullOrWhiteSpace(token) ||
+            string.IsNullOrWhiteSpace(database) ||
+            string.IsNullOrWhiteSpace(username))
+        {
+            return Unauthorized(new
+            {
+                message = "Please sign in to Aras before running cleanup."
+            });
+        }
+
         if (!_runExecutionCoordinator.TryAcquire(runId))
         {
             return Conflict(new
@@ -1232,12 +1255,11 @@ public async Task<IActionResult> StartBenchmark(
 
         try
         {
+            
             var serverUrl = _configuration["Aras:ServerUrl"];
-            var database = _configuration["Aras:Database"];
             var dataDirectory = _configuration["Storage:DataDirectory"];
 
             if (string.IsNullOrWhiteSpace(serverUrl) ||
-                string.IsNullOrWhiteSpace(database) ||
                 string.IsNullOrWhiteSpace(dataDirectory))
             {
                 return StatusCode(500, new
@@ -1246,7 +1268,8 @@ public async Task<IActionResult> StartBenchmark(
                 });
             }
 
-            var environmentId = $"{serverUrl.TrimEnd('/')}|{database}";
+            var environmentId =
+                $"{serverUrl.TrimEnd('/')}|{database}";
 
             var dataRoot = Path.IsPathRooted(dataDirectory)
                 ? Path.GetFullPath(dataDirectory)
@@ -1298,22 +1321,7 @@ public async Task<IActionResult> StartBenchmark(
                 });
             }
 
-            // Authenticate with the configured Aras environment.
-            var username = _configuration["ARAS_USERNAME"];
-            var password = _configuration["ARAS_PASSWORD"];
-
-            if (string.IsNullOrWhiteSpace(username) ||
-                string.IsNullOrWhiteSpace(password))
-            {
-                return StatusCode(500, new
-                {
-                    Message = "Aras credentials are not configured."
-                });
-            }
-
-            var token = await _arasClient.GetAccessTokenAsync(
-                username,
-                password);
+         
 
             // Give cleanup its own timeout budget.
             // Do not use HttpContext.RequestAborted for recovery cleanup.

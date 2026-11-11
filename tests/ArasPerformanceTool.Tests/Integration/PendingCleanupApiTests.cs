@@ -13,6 +13,8 @@ using Moq;
 using ArasPerformanceTool.Engine.Aras;
 using Microsoft.AspNetCore.TestHost;
 using System.Xml.Linq;
+using System.Net.Http.Json;
+
 
 namespace ArasPerformanceTool.Tests.Integration;
 
@@ -76,10 +78,13 @@ public sealed class PendingCleanupApiTests : IDisposable
 
         // Override configuration so the API reads only
         // this test's temporary directory.
+        
+        var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
+
         using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
-                builder.ConfigureAppConfiguration((context, config) =>
+                builder.ConfigureAppConfiguration((_, config) =>
                 {
                     config.AddInMemoryCollection(
                         new Dictionary<string, string?>
@@ -87,8 +92,30 @@ public sealed class PendingCleanupApiTests : IDisposable
                             ["Aras:ServerUrl"] =
                                 "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
                             ["Aras:Database"] = "InnovatorSolutions",
+                            ["Aras:DatabaseListUrl"] =
+                                "https://aras.test/server/DBList.aspx",
                             ["Storage:DataDirectory"] = _directory
                         });
+                });
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IArasClient>();
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton<IHttpClientFactory>(
+                        httpClientFactoryMock.Object);
                 });
             });
 
@@ -100,15 +127,28 @@ public sealed class PendingCleanupApiTests : IDisposable
 
         var responseText = await response.Content.ReadAsStringAsync();
 
+
         // Assert: HTTP 200
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         using var document = JsonDocument.Parse(responseText);
         var root = document.RootElement;
 
-        // Exactly one pending run.
-        var pendingRuns = root.GetProperty("pendingRuns");
+       Assert.True(
+            root.TryGetProperty("pendingRuns", out var pendingRuns),
+            $"Missing 'pendingRuns'. Actual response: {responseText}");
+
         var pending = Assert.Single(pendingRuns.EnumerateArray());
+
+        Assert.True(
+            pending.TryGetProperty("runId", out var actualRunId) &&
+            pending.TryGetProperty("remainingCount", out var actualCount) &&
+            pending.TryGetProperty("environmentId", out var actualEnvironment),
+            $"Missing pending run property. Actual response: {responseText}");
+        // Exactly one pending run.
+        //var pendingRuns = root.GetProperty("pendingRuns");
+      
+       
 
         Assert.Equal(
             runId.ToString("N"),
@@ -182,6 +222,7 @@ public sealed class PendingCleanupApiTests : IDisposable
 
         var responseText =
             await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"Response JSON: {responseText}");
 
         // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -224,6 +265,15 @@ public sealed class PendingCleanupApiTests : IDisposable
     {
         // Arrange
         var runId = Guid.NewGuid();
+        var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
+
+        arasClientMock
+            .Setup(x => x.GetAccessTokenAsync(
+                "test-user",
+                "test-password",
+                "InnovatorSolutions",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-access-token");
 
         using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -235,18 +285,47 @@ public sealed class PendingCleanupApiTests : IDisposable
                         {
                             ["Aras:ServerUrl"] =
                                 "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+
                             ["Aras:Database"] = "InnovatorSolutions",
+
                             ["Storage:DataDirectory"] = _directory
                         });
                 });
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IArasClient>();
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton(
+                        httpClientFactoryMock.Object);
+                });
             });
+            
 
         using var client = factory.CreateClient();
 
+        await LoginAsync(client, arasClientMock);
+
+        var csrfToken = await GetCsrfTokenAsync(client);
+
         // Act
-        using var response = await client.PostAsync(
+        using var response = await PostWithCsrfAsync(
+            client,
             $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-            content: null);
+            null,
+            csrfToken);
 
         // Assert
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -354,15 +433,34 @@ public sealed class PendingCleanupApiTests : IDisposable
 
                     services.AddSingleton<IArasClient>(
                         arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton(
+                        httpClientFactoryMock.Object);
                 });
             });
 
         using var client = factory.CreateClient();
 
+        await LoginAsync(client, arasClientMock);
+
+        var csrfToken = await GetCsrfTokenAsync(client);
+
         // Act
-        using var response = await client.PostAsync(
+        using var response = await PostWithCsrfAsync(
+            client,
             $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-            content: null);
+            null,
+            csrfToken);
 
         var responseText = await response.Content.ReadAsStringAsync();
 
@@ -411,6 +509,22 @@ public sealed class PendingCleanupApiTests : IDisposable
                 coordinator.Release(runId);
             }
         }
+        
+        // Login must request the token exactly once.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+            "test-user",
+            "test-password",
+            "InnovatorSolutions",
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Cleanup must not request a new OAuth token.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
+            Times.Never);
+
         // Environment validation must happen before authentication
         // or any AML request.
         arasClientMock.VerifyNoOtherCalls();
@@ -482,15 +596,34 @@ public sealed class PendingCleanupApiTests : IDisposable
 
                     services.AddSingleton<IArasClient>(
                         arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton(
+                        httpClientFactoryMock.Object);
                 });
             });
 
         using var client = factory.CreateClient();
 
+        await LoginAsync(client, arasClientMock);
+
+        var csrfToken = await GetCsrfTokenAsync(client);
+
         // Act
-        using var response = await client.PostAsync(
+        using var response = await PostWithCsrfAsync(
+            client,
             $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-            content: null);
+            null,
+            csrfToken);
 
         var responseText = await response.Content.ReadAsStringAsync();
 
@@ -515,6 +648,22 @@ public sealed class PendingCleanupApiTests : IDisposable
         // Manifest must remain unchanged.
         var after = File.ReadAllBytes(manifestPath);
         Assert.Equal(before, after);
+
+        
+        // Login must request the token exactly once.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+            "test-user",
+            "test-password",
+            "InnovatorSolutions",
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Cleanup must not request a new OAuth token.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
+            Times.Never);
 
         // No authentication or AML calls.
         arasClientMock.VerifyNoOtherCalls();
@@ -607,10 +756,25 @@ public sealed class PendingCleanupApiTests : IDisposable
 
                     services.AddSingleton<IArasClient>(
                         arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton(
+                        httpClientFactoryMock.Object);
                 });
             });
 
         using var client = factory.CreateClient();
+
+        await LoginAsync(client, arasClientMock);
 
         // Acquire the same RunId before sending the POST request.
         var coordinator = factory.Services
@@ -622,10 +786,14 @@ public sealed class PendingCleanupApiTests : IDisposable
 
         try
         {
+            var csrfToken = await GetCsrfTokenAsync(client);
+
             // Act
-            using var response = await client.PostAsync(
+            using var response = await PostWithCsrfAsync(
+                client,
                 $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-                content: null);
+                null,
+                csrfToken);
 
             var responseText =
                 await response.Content.ReadAsStringAsync();
@@ -643,6 +811,24 @@ public sealed class PendingCleanupApiTests : IDisposable
             // Manifest must not be modified.
             var after = File.ReadAllBytes(manifestPath);
             Assert.Equal(before, after);
+
+            
+            arasClientMock.Verify(x => x.GetAccessTokenAsync(
+                "test-user",
+                "test-password",
+                "InnovatorSolutions",
+                It.IsAny<CancellationToken>()),
+                Times.Once);
+
+            // Cleanup itself must not request another token.
+            arasClientMock.Verify(x => x.GetAccessTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+                Times.Never);
+
+           
+
 
             // No authentication or AML calls.
             arasClientMock.VerifyNoOtherCalls();
@@ -714,8 +900,9 @@ public sealed class PendingCleanupApiTests : IDisposable
         // Simulate OAuth authentication.
         arasClientMock
             .Setup(x => x.GetAccessTokenAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
+                "test-user",
+                "test-password",
+                "InnovatorSolutions",
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync("test-access-token");
 
@@ -801,27 +988,45 @@ public sealed class PendingCleanupApiTests : IDisposable
                             ["Aras:ServerUrl"] =
                                 "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
                             ["Aras:Database"] = "InnovatorSolutions",
-                            ["Storage:DataDirectory"] = _directory,
-                            ["ARAS_USERNAME"] = "test-user",
-                            ["ARAS_PASSWORD"] = "test-password"
+                            ["Storage:DataDirectory"] = _directory
+                            
                         });
                 });
 
-                builder.ConfigureTestServices(services =>
+               builder.ConfigureTestServices(services =>
                 {
                     services.RemoveAll<IArasClient>();
 
                     services.AddSingleton<IArasClient>(
                         arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton(
+                        httpClientFactoryMock.Object);
                 });
             });
 
         using var client = factory.CreateClient();
 
+        await LoginAsync(client, arasClientMock);
+
+        var csrfToken = await GetCsrfTokenAsync(client);
+
         // Act: Execute manual cleanup.
-        using var response = await client.PostAsync(
+        using var response = await PostWithCsrfAsync(
+            client,
             $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-            content: null);
+            null,
+            csrfToken);
 
         var responseText =
             await response.Content.ReadAsStringAsync();
@@ -835,6 +1040,8 @@ public sealed class PendingCleanupApiTests : IDisposable
 
         using var responseDocument = JsonDocument.Parse(responseText);
         var root = responseDocument.RootElement;
+        Console.WriteLine(
+            $"Pending Cleanup response: {responseText}");
 
         Assert.Equal(1, root.GetProperty("found").GetInt32());
         Assert.Equal(1, root.GetProperty("deleted").GetInt32());
@@ -850,9 +1057,10 @@ public sealed class PendingCleanupApiTests : IDisposable
 
         // Verify authentication was called once.
         arasClientMock.Verify(x => x.GetAccessTokenAsync(
-            "test-user",
-            "test-password",
-            It.IsAny<CancellationToken>()),
+                "test-user",
+                "test-password",
+                "InnovatorSolutions",
+                It.IsAny<CancellationToken>()),
             Times.Once);
 
         // Exactly three AML requests: Read, Delete, Read.
@@ -1034,12 +1242,16 @@ public async Task PostManualCleanup_WhenDeletePendingItemIsMissing_MarksAlreadyM
         });
 
     using var client = factory.CreateClient();
+    await LoginAsync(client, arasClientMock);
 
     // Act
-    using var response = await client.PostAsync(
-        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-        content: null);
+    var csrfToken = await GetCsrfTokenAsync(client);
 
+    using var response = await PostWithCsrfAsync(
+        client,
+        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
+        null,
+        csrfToken);
     var responseText =
         await response.Content.ReadAsStringAsync();
 
@@ -1062,11 +1274,21 @@ public async Task PostManualCleanup_WhenDeletePendingItemIsMissing_MarksAlreadyM
     // Exactly one GET, no DELETE.
     Assert.Equal(new[] { "get" }, actions);
 
+   
+    // Login obtains the token once.
     arasClientMock.Verify(x => x.GetAccessTokenAsync(
         "test-user",
         "test-password",
+        "InnovatorSolutions",
         It.IsAny<CancellationToken>()),
         Times.Once);
+
+    // Cleanup must not request another token.
+    arasClientMock.Verify(x => x.GetAccessTokenAsync(
+        It.IsAny<string>(),
+        It.IsAny<string>(),
+        It.IsAny<CancellationToken>()),
+        Times.Never);
 
     arasClientMock.Verify(x => x.ExecuteAmlAsync(
         It.IsAny<string>(),
@@ -1299,11 +1521,16 @@ public async Task PostManualCleanup_WhenOneItemFails_ContinuesAndPreservesFailur
 
     using var client = factory.CreateClient();
 
-    // Act: Run manual cleanup.
-    using var response = await client.PostAsync(
-        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-        content: null);
+    await LoginAsync(client, arasClientMock);
 
+    // Act: Run manual cleanup.
+    var csrfToken = await GetCsrfTokenAsync(client);
+
+    using var response = await PostWithCsrfAsync(
+        client,
+        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
+        null,
+        csrfToken);
     var responseText = await response.Content.ReadAsStringAsync();
 
     // Assert: HTTP 200 means the cleanup attempt finished,
@@ -1336,8 +1563,9 @@ public async Task PostManualCleanup_WhenOneItemFails_ContinuesAndPreservesFailur
     arasClientMock.Verify(x => x.GetAccessTokenAsync(
         "test-user",
         "test-password",
+        "InnovatorSolutions",
         It.IsAny<CancellationToken>()),
-        Times.Once);
+    Times.Once);
 
     arasClientMock.Verify(x => x.ExecuteAmlAsync(
         It.IsAny<string>(),
@@ -1603,6 +1831,8 @@ public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
 
     using var client = factory.CreateClient();
 
+    await LoginAsync(client, arasClientMock);
+
     var endpoint =
         $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup";
 
@@ -1665,11 +1895,15 @@ public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
 
     attempt = 2;
 
-    using (var response = await client.PostAsync(
+    var csrfToken = await GetCsrfTokenAsync(client);
+
+    using (var response = await PostWithCsrfAsync(
+        client,
         endpoint,
-        content: null))
+        null,
+        csrfToken))
     {
-        var responseText =
+            var responseText =
             await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -1720,9 +1954,13 @@ public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
 
     var manifestBeforeThird = File.ReadAllBytes(manifestPath);
 
-    using (var response = await client.PostAsync(
+    csrfToken = await GetCsrfTokenAsync(client);
+
+    using (var response = await PostWithCsrfAsync(
+        client,
         endpoint,
-        content: null))
+        null,
+        csrfToken))
     {
         var responseText =
             await response.Content.ReadAsStringAsync();
@@ -1741,12 +1979,20 @@ public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
 
     Assert.Equal(callsBeforeThird, actions.Count);
 
-    // Only attempts 1 and 2 should authenticate.
+   // Login obtains the token exactly once.
     arasClientMock.Verify(x => x.GetAccessTokenAsync(
-        "test-user",
-        "test-password",
-        It.IsAny<CancellationToken>()),
-        Times.Exactly(2));
+            "test-user",
+            "test-password",
+            "InnovatorSolutions",
+            It.IsAny<CancellationToken>()),
+        Times.Once);
+
+    // The legacy three-argument overload must never be used.
+    arasClientMock.Verify(x => x.GetAccessTokenAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
+        Times.Never);
 
     // Attempt 1: 4 AML calls.
     // Attempt 2: 3 AML calls.
@@ -1793,7 +2039,154 @@ public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
     }
 }
 
-    public void Dispose()
+   
+[Fact]
+public async Task PostManualCleanup_WithoutSession_ReturnsUnauthorized()
+{
+    var runId = Guid.NewGuid();
+
+    using var factory = new WebApplicationFactory<Program>()
+        .WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((context, config) =>
+            {
+                config.AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["Aras:ServerUrl"] =
+                            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+
+                        ["Aras:Database"] = "InnovatorSolutions",
+
+                        ["Storage:DataDirectory"] = _directory
+                    });
+            });
+        });
+
+    using var client = factory.CreateClient();
+
+    var csrfToken = await GetCsrfTokenAsync(client);
+
+    using var response = await PostWithCsrfAsync(
+        client,
+        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
+        null,
+        csrfToken);
+
+    Assert.Equal(
+        HttpStatusCode.Unauthorized,
+        response.StatusCode);
+
+    // A missing session must not acquire or leave a Run lock.
+    var coordinator = factory.Services
+        .GetRequiredService<RunExecutionCoordinator>();
+
+    var acquired = coordinator.TryAcquire(runId);
+
+    try
+    {
+        Assert.True(
+            acquired,
+            "The unauthorized cleanup request did not release its Run lock.");
+    }
+    finally
+    {
+        if (acquired)
+        {
+            coordinator.Release(runId);
+        }
+    }
+}
+
+    private static async Task<string> GetCsrfTokenAsync(
+        HttpClient client)
+    {
+        using var response = await client.GetAsync(
+            "/api/auth/csrf");
+
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content
+            .ReadFromJsonAsync<JsonElement>();
+
+        return json.GetProperty("requestToken").GetString()
+            ?? throw new InvalidOperationException(
+                "CSRF token was not returned.");
+    }
+
+    private static async Task<HttpResponseMessage> PostWithCsrfAsync(
+        HttpClient client,
+        string url,
+        object? body,
+        string csrfToken)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            url);
+
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(body);
+        }
+
+        return await client.SendAsync(request);
+    }
+   private static async Task LoginAsync(
+    HttpClient client,
+        Mock<IArasClient> arasClientMock)
+    {
+        arasClientMock
+            .Setup(x => x.GetAccessTokenAsync(
+                "test-user",
+                "test-password",
+                "InnovatorSolutions",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-access-token");
+
+        var csrfToken = await GetCsrfTokenAsync(client);
+
+        using var response = await PostWithCsrfAsync(
+            client,
+            "/api/auth/login",
+            new
+            {
+                username = "test-user",
+                password = "test-password",
+                database = "InnovatorSolutions"
+            },
+            csrfToken);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.True(
+            response.IsSuccessStatusCode,
+            $"Test login failed: {response.StatusCode}. {body}");
+    }
+
+    private sealed class FakeDatabaseListHandler
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            const string xml =
+                "<DBList><DB id=\"InnovatorSolutions\"/></DBList>";
+
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    xml,
+                    System.Text.Encoding.UTF8,
+                    "application/xml")
+            };
+
+            return Task.FromResult(response);
+        }
+    }
+     public void Dispose()
     {
         if (Directory.Exists(_directory))
         {
