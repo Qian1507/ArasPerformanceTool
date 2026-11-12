@@ -1282,10 +1282,20 @@ function renderAmlQueryResults(queryResult) {
     pendingCleanupResult.textContent = "Cleaning test data...";
 
     try {
-        const response = await fetch(
-            `/api/Benchmark/pending-cleanup/${encodeURIComponent(runId)}/cleanup`,
-            { method: "POST" }
-        );
+        
+            const csrfToken = await getCsrfToken();
+
+            const response = await fetch(
+                `/api/Benchmark/pending-cleanup/${encodeURIComponent(runId)}/cleanup`,
+                {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {
+                        "X-CSRF-TOKEN": csrfToken
+                    }
+                }
+            );
+
 
         const data = await response.json();
 

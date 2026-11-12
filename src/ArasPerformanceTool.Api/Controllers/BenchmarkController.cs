@@ -1033,11 +1033,21 @@ public async Task<IActionResult> StartBenchmark(
     /// Read-only; does not perform cleanup.
     /// </summary>
     
-    [HttpGet("pending-cleanup")]
-    public ActionResult GetPendingCleanupRuns()
+ 
+[HttpGet("pending-cleanup")]
+public async Task<IActionResult> GetPendingCleanupRuns()
+{
+    var database = await GetCleanupSessionDatabaseAsync();
+
+    if (database is null)
     {
-        var serverUrl = _configuration["Aras:ServerUrl"];
-        var database = _configuration["Aras:Database"];
+        return Unauthorized(new
+        {
+            message = "Please sign in to Aras."
+        });
+    }
+
+    var serverUrl = _configuration["Aras:ServerUrl"];
 
         if (string.IsNullOrWhiteSpace(serverUrl) ||
             string.IsNullOrWhiteSpace(database))
@@ -1097,41 +1107,53 @@ public async Task<IActionResult> StartBenchmark(
     }
 
     
-    /// <summary>
-    /// Retrieves unresolved test items for a specific benchmark run.
-    /// Read-only; does not execute AML or delete items.
-    /// </summary>
-    [HttpGet("pending-cleanup/{runId:guid}")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-    public IActionResult GetPendingCleanupRun(Guid runId)
+   
+/// <summary>
+/// Retrieves unresolved test items for a specific benchmark run.
+/// Read-only; does not execute AML or delete items.
+/// </summary>
+[HttpGet("pending-cleanup/{runId:guid}")]
+[ProducesResponseType(StatusCodes.Status200OK)]
+[ProducesResponseType(StatusCodes.Status401Unauthorized)]
+[ProducesResponseType(StatusCodes.Status404NotFound)]
+[ProducesResponseType(StatusCodes.Status500InternalServerError)]
+public async Task<IActionResult> GetPendingCleanupRun(Guid runId)
+{
+    // Use the current authenticated Aras environment.
+    var database = await GetCleanupSessionDatabaseAsync();
+
+    if (database is null)
     {
-        var serverUrl = _configuration["Aras:ServerUrl"];
-        var database = _configuration["Aras:Database"];
-
-        if (string.IsNullOrWhiteSpace(serverUrl) ||
-            string.IsNullOrWhiteSpace(database))
+        return Unauthorized(new
         {
-            return StatusCode(500, new
-            {
-                Message = "Aras environment is not configured."
-            });
-        }
+            Message = "Please sign in to Aras."
+        });
+    }
 
-        var environmentId =
-            $"{serverUrl.TrimEnd('/')}|{database}";
+    var serverUrl = _configuration["Aras:ServerUrl"];
 
-        var dataDirectory =
-            _configuration["Storage:DataDirectory"];
-
-        if (string.IsNullOrWhiteSpace(dataDirectory))
+    if (string.IsNullOrWhiteSpace(serverUrl))
+    {
+        return StatusCode(500, new
         {
-            return StatusCode(500, new
-            {
-                Message = "Storage data directory is not configured."
-            });
-        }
+            Message = "Aras environment is not configured."
+        });
+    }
+
+    var environmentId =
+        $"{serverUrl.TrimEnd('/')}|{database}";
+
+    var dataDirectory =
+        _configuration["Storage:DataDirectory"];
+
+    if (string.IsNullOrWhiteSpace(dataDirectory))
+    {
+        return StatusCode(500, new
+        {
+            Message = "Storage data directory is not configured."
+        });
+    }
+
 
         var dataRoot = Path.IsPathRooted(dataDirectory)
             ? Path.GetFullPath(dataDirectory)
@@ -1219,8 +1241,11 @@ public async Task<IActionResult> StartBenchmark(
     }
 
 
+ 
     [HttpPost("pending-cleanup/{runId:guid}/cleanup")]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> CleanupPendingRun(Guid runId)
+
     {
         // Validate the current Aras session before acquiring the Run lock.
         await HttpContext.Session.LoadAsync(
@@ -1565,4 +1590,29 @@ public async Task<IActionResult> StartBenchmark(
             itemType,
             itemId) is null;
     }
+    
+    private async Task<string?> GetCleanupSessionDatabaseAsync()
+    {
+        await HttpContext.Session.LoadAsync(
+            HttpContext.RequestAborted);
+
+        var token = HttpContext.Session.GetString(
+            "Aras.AccessToken");
+
+        var database = HttpContext.Session.GetString(
+            "Aras.Database");
+
+        var username = HttpContext.Session.GetString(
+            "Aras.Username");
+
+        if (string.IsNullOrWhiteSpace(token) ||
+            string.IsNullOrWhiteSpace(database) ||
+            string.IsNullOrWhiteSpace(username))
+        {
+            return null;
+        }
+
+        return database;
+    }
+
 }

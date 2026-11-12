@@ -36,6 +36,9 @@ public sealed class PendingCleanupApiTests : IDisposable
             Path.Combine(_directory, "manifests"));
     }
 
+
+    // ===== GET Pending Cleanup =====
+
     [Fact]
     public async Task GetPendingCleanup_WhenActiveItemExists_ReturnsRunWithoutFilePath()
     {
@@ -120,6 +123,9 @@ public sealed class PendingCleanupApiTests : IDisposable
             });
 
         using var client = factory.CreateClient();
+        
+        await LoginAsync(client, arasClientMock);
+
 
         // Act
         using var response = await client.GetAsync(
@@ -198,6 +204,9 @@ public sealed class PendingCleanupApiTests : IDisposable
             corruptedPath,
             "{ invalid json");
 
+        var arasClientMock =
+             new Mock<IArasClient>(MockBehavior.Strict);
+
         using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
@@ -209,12 +218,38 @@ public sealed class PendingCleanupApiTests : IDisposable
                             ["Aras:ServerUrl"] =
                                 "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
                             ["Aras:Database"] = "InnovatorSolutions",
-                            ["Storage:DataDirectory"] = _directory
+                            ["Storage:DataDirectory"] = _directory,
+                            ["Aras:DatabaseListUrl"] =
+                                "https://aras.test/server/DBList.aspx",
                         });
                 });
+                
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IArasClient>();
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton<IHttpClientFactory>(
+                        httpClientFactoryMock.Object);
+                });
+
             });
 
+        
+
         using var client = factory.CreateClient();
+        await LoginAsync(client, arasClientMock);
 
         // Act
         using var response = await client.GetAsync(
@@ -259,7 +294,249 @@ public sealed class PendingCleanupApiTests : IDisposable
             "{ invalid json",
             File.ReadAllText(corruptedPath));
     }
+    
+    [Fact]
+    public async Task GetPendingCleanup_WithoutSession_ReturnsUnauthorized()
+    {
+        // Arrange
+        using var factory = new WebApplicationFactory<Program>();
 
+        using var client = factory.CreateClient();
+
+        // Act: Request pending runs without logging in.
+        using var response = await client.GetAsync(
+            "/api/Benchmark/pending-cleanup");
+
+        // Assert
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetPendingCleanupDetail_WithoutSession_ReturnsUnauthorized()
+    {
+        // Arrange
+        using var factory = new WebApplicationFactory<Program>();
+
+        using var client = factory.CreateClient();
+
+        var runId = Guid.NewGuid();
+
+        // Act: Request a run without logging in.
+        using var response = await client.GetAsync(
+            $"/api/Benchmark/pending-cleanup/{runId:N}");
+
+        // Assert
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            response.StatusCode);
+    }
+
+
+    [Fact]
+    public async Task GetPendingCleanup_WhenSessionDatabaseDiffersFromConfiguration_IsolatesEnvironment()
+    {
+        // Arrange: Session database and configured database differ.
+        const string serverUrl =
+            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx";
+
+        const string configuredDatabase = "OtherDatabase";
+
+        var sessionRunId = Guid.NewGuid();
+        var otherRunId = Guid.NewGuid();
+
+        var createdAt = DateTime.UtcNow;
+
+        // Create two manifests belonging to different environments.
+        void WriteManifest(Guid runId, string environmentId)
+        {
+            var manifestPath = Path.Combine(
+                _directory,
+                "manifests",
+                $"{runId:N}.json");
+
+            var manifest = new
+            {
+                SchemaVersion = 1,
+                RunId = runId.ToString("N"),
+                EnvironmentId = environmentId,
+                CreatedAtUtc = createdAt,
+                Items = new[]
+                {
+                    new
+                    {
+                        ItemType = "Part",
+                        Id = Guid.NewGuid().ToString("N").ToUpperInvariant(),
+                        CreatedAtUtc = createdAt,
+                        Status = (int)TrackedItemStatus.Active,
+                        Source = 0,
+                        ConfigId = (string?)null,
+                        ParentItemId = (string?)null,
+                        LastError = (string?)null
+                    }
+                }
+            };
+
+            File.WriteAllText(
+                manifestPath,
+                JsonSerializer.Serialize(manifest));
+        }
+
+        WriteManifest(sessionRunId, EnvironmentId);
+
+        WriteManifest(
+            otherRunId,
+            $"{serverUrl}|{configuredDatabase}");
+        
+        
+        var sessionManifestPath = Path.Combine(
+            _directory,
+            "manifests",
+            $"{sessionRunId:N}.json");
+
+        var otherManifestPath = Path.Combine(
+            _directory,
+            "manifests",
+            $"{otherRunId:N}.json");
+
+        var sessionManifestBefore =
+            await File.ReadAllBytesAsync(sessionManifestPath);
+
+        var otherManifestBefore =
+            await File.ReadAllBytesAsync(otherManifestPath);
+
+
+        var arasClientMock =
+            new Mock<IArasClient>(MockBehavior.Strict);
+
+        using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((_, config) =>
+                {
+                    config.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["Aras:ServerUrl"] = serverUrl,
+                            ["Aras:Database"] = configuredDatabase,
+                            ["Aras:DatabaseListUrl"] =
+                                "https://aras.test/server/DBList.aspx",
+                            ["Storage:DataDirectory"] = _directory
+                        });
+                });
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IArasClient>();
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton<IHttpClientFactory>(
+                        httpClientFactoryMock.Object);
+                });
+            });
+
+        using var client = factory.CreateClient();
+
+        // LoginAsync establishes a session for InnovatorSolutions.
+        await LoginAsync(client, arasClientMock);
+
+        // =====================================================
+        // Test 1: List must use the Session database.
+        // =====================================================
+
+        using (var response = await client.GetAsync(
+            "/api/Benchmark/pending-cleanup"))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var json = await response.Content
+                .ReadFromJsonAsync<JsonElement>();
+
+            var pendingRuns = json.GetProperty("pendingRuns");
+
+            var run = Assert.Single(
+                pendingRuns.EnumerateArray());
+
+            Assert.Equal(
+                sessionRunId.ToString("N"),
+                run.GetProperty("runId").GetString());
+
+            Assert.Equal(
+                EnvironmentId,
+                run.GetProperty("environmentId").GetString());
+        }
+
+        // =====================================================
+        // Test 2: Detail of current environment is accessible.
+        // =====================================================
+
+        using (var response = await client.GetAsync(
+            $"/api/Benchmark/pending-cleanup/{sessionRunId:N}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var json = await response.Content
+                .ReadFromJsonAsync<JsonElement>();
+
+            Assert.Equal(
+                sessionRunId.ToString("N"),
+                json.GetProperty("runId").GetString());
+
+            Assert.Equal(
+                1,
+                json.GetProperty("remainingCount").GetInt32());
+        }
+
+        // =====================================================
+        // Test 3: Detail of another environment is inaccessible.
+        // =====================================================
+
+        using (var response = await client.GetAsync(
+            $"/api/Benchmark/pending-cleanup/{otherRunId:N}"))
+        {
+            Assert.Equal(
+                HttpStatusCode.NotFound,
+                response.StatusCode);
+        }
+
+        // No Aras CRUD operations should be executed by GET.
+        arasClientMock.Verify(
+            x => x.ExecuteAmlAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+        
+        
+        // GET requests must not modify either manifest.
+        Assert.True(File.Exists(sessionManifestPath));
+        Assert.True(File.Exists(otherManifestPath));
+
+        var sessionManifestAfter =
+            await File.ReadAllBytesAsync(sessionManifestPath);
+
+        var otherManifestAfter =
+            await File.ReadAllBytesAsync(otherManifestPath);
+
+        Assert.Equal(sessionManifestBefore, sessionManifestAfter);
+        Assert.Equal(otherManifestBefore, otherManifestAfter);
+
+    }
+
+      // ===== POST Manual Cleanup =====
     [Fact]
     public async Task PostManualCleanup_WhenManifestDoesNotExist_ReturnsNotFound()
     {
@@ -1111,746 +1388,436 @@ public sealed class PendingCleanupApiTests : IDisposable
 
 
     
-[Fact]
-public async Task PostManualCleanup_WhenDeletePendingItemIsMissing_MarksAlreadyMissingWithoutDeleting()
-{
-    // Arrange: The previous cleanup may have deleted this item,
-    // but its final state was not persisted.
-    var runId = Guid.NewGuid();
-    var itemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
-    var createdAt = DateTime.UtcNow;
-
-    var manifestPath = Path.Combine(
-        _directory,
-        "manifests",
-        $"{runId:N}.json");
-
-    var manifest = new
+    [Fact]
+    public async Task PostManualCleanup_WhenDeletePendingItemIsMissing_MarksAlreadyMissingWithoutDeleting()
     {
-        SchemaVersion = 1,
-        RunId = runId.ToString("N"),
-        EnvironmentId,
-        CreatedAtUtc = createdAt,
-        Items = new[]
+        // Arrange: The previous cleanup may have deleted this item,
+        // but its final state was not persisted.
+        var runId = Guid.NewGuid();
+        var itemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var createdAt = DateTime.UtcNow;
+
+        var manifestPath = Path.Combine(
+            _directory,
+            "manifests",
+            $"{runId:N}.json");
+
+        var manifest = new
         {
-            new
+            SchemaVersion = 1,
+            RunId = runId.ToString("N"),
+            EnvironmentId,
+            CreatedAtUtc = createdAt,
+            Items = new[]
             {
-                ItemType = "Part",
-                Id = itemId,
-                CreatedAtUtc = createdAt,
-                Status = (int)TrackedItemStatus.DeletePending,
-                Source = (int)TestItemSource.Standard,
-                ConfigId = (string?)null,
-                ParentItemId = (string?)null,
-                LastError = (string?)null
+                new
+                {
+                    ItemType = "Part",
+                    Id = itemId,
+                    CreatedAtUtc = createdAt,
+                    Status = (int)TrackedItemStatus.DeletePending,
+                    Source = (int)TestItemSource.Standard,
+                    ConfigId = (string?)null,
+                    ParentItemId = (string?)null,
+                    LastError = (string?)null
+                }
             }
-        }
-    };
+        };
 
-    File.WriteAllText(
-        manifestPath,
-        JsonSerializer.Serialize(manifest));
+        File.WriteAllText(
+            manifestPath,
+            JsonSerializer.Serialize(manifest));
 
-    var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
+        var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
 
-    var actions = new List<string>();
+        var actions = new List<string>();
 
-    // Mock authentication.
-    arasClientMock
-        .Setup(x => x.GetAccessTokenAsync(
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-        .ReturnsAsync("test-access-token");
+        // Mock authentication.
+        arasClientMock
+            .Setup(x => x.GetAccessTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-access-token");
 
-    // Aras confirms the item is already missing.
-    arasClientMock
-        .Setup(x => x.ExecuteAmlAsync(
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-        .ReturnsAsync((
-            string serverUrl,
-            string accessToken,
-            string aml,
-            CancellationToken cancellationToken) =>
-        {
-            Assert.Equal(
-                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
-                serverUrl);
-
-            Assert.Equal("test-access-token", accessToken);
-
-            var document = XDocument.Parse(aml);
-
-            var item = Assert.Single(
-                document.Descendants("Item"));
-
-            Assert.Equal(
-                "Part",
-                (string?)item.Attribute("type"));
-
-            Assert.Equal(
-                itemId,
-                (string?)item.Attribute("id"));
-
-            var action = (string?)item.Attribute("action");
-
-            Assert.NotNull(action);
-            actions.Add(action);
-
-            // No Delete operation should ever be sent.
-            Assert.Equal("get", action);
-
-            return """
-                <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
-                  <SOAP-ENV:Body>
-                    <SOAP-ENV:Fault>
-                      <faultcode>0</faultcode>
-                      <faultstring>No items found</faultstring>
-                    </SOAP-ENV:Fault>
-                  </SOAP-ENV:Body>
-                </SOAP-ENV:Envelope>
-                """;
-        });
-
-    using var factory = new WebApplicationFactory<Program>()
-        .WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureAppConfiguration((context, config) =>
+        // Aras confirms the item is already missing.
+        arasClientMock
+            .Setup(x => x.ExecuteAmlAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((
+                string serverUrl,
+                string accessToken,
+                string aml,
+                CancellationToken cancellationToken) =>
             {
-                config.AddInMemoryCollection(
-                    new Dictionary<string, string?>
-                    {
-                        ["Aras:ServerUrl"] =
-                            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
-                        ["Aras:Database"] = "InnovatorSolutions",
-                        ["Storage:DataDirectory"] = _directory,
-                        ["ARAS_USERNAME"] = "test-user",
-                        ["ARAS_PASSWORD"] = "test-password"
-                    });
-            });
+                Assert.Equal(
+                    "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+                    serverUrl);
 
-            builder.ConfigureTestServices(services =>
-            {
-                services.RemoveAll<IArasClient>();
+                Assert.Equal("test-access-token", accessToken);
 
-                services.AddSingleton<IArasClient>(
-                    arasClientMock.Object);
-            });
-        });
+                var document = XDocument.Parse(aml);
 
-    using var client = factory.CreateClient();
-    await LoginAsync(client, arasClientMock);
+                var item = Assert.Single(
+                    document.Descendants("Item"));
 
-    // Act
-    var csrfToken = await GetCsrfTokenAsync(client);
+                Assert.Equal(
+                    "Part",
+                    (string?)item.Attribute("type"));
 
-    using var response = await PostWithCsrfAsync(
-        client,
-        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-        null,
-        csrfToken);
-    var responseText =
-        await response.Content.ReadAsStringAsync();
+                Assert.Equal(
+                    itemId,
+                    (string?)item.Attribute("id"));
 
-    // Assert: Cleanup completed without another Delete.
-    Assert.Equal(
-        HttpStatusCode.OK,
-        response.StatusCode);
+                var action = (string?)item.Attribute("action");
 
-    using var responseDocument = JsonDocument.Parse(responseText);
-    var root = responseDocument.RootElement;
+                Assert.NotNull(action);
+                actions.Add(action);
 
-    Assert.Equal(1, root.GetProperty("found").GetInt32());
-    Assert.Equal(0, root.GetProperty("deleted").GetInt32());
-    Assert.Equal(1, root.GetProperty("alreadyMissing").GetInt32());
-    Assert.Equal(0, root.GetProperty("failed").GetInt32());
-    Assert.Equal(0, root.GetProperty("remaining").GetInt32());
-
-    Assert.True(root.GetProperty("completed").GetBoolean());
-
-    // Exactly one GET, no DELETE.
-    Assert.Equal(new[] { "get" }, actions);
-
-   
-    // Login obtains the token once.
-    arasClientMock.Verify(x => x.GetAccessTokenAsync(
-        "test-user",
-        "test-password",
-        "InnovatorSolutions",
-        It.IsAny<CancellationToken>()),
-        Times.Once);
-
-    // Cleanup must not request another token.
-    arasClientMock.Verify(x => x.GetAccessTokenAsync(
-        It.IsAny<string>(),
-        It.IsAny<string>(),
-        It.IsAny<CancellationToken>()),
-        Times.Never);
-
-    arasClientMock.Verify(x => x.ExecuteAmlAsync(
-        It.IsAny<string>(),
-        It.IsAny<string>(),
-        It.IsAny<string>(),
-        It.IsAny<CancellationToken>()),
-        Times.Once);
-
-    arasClientMock.VerifyNoOtherCalls();
-
-    // Reload the manifest from disk and verify the persisted state.
-    var finalManifest = TestDataManifest.Load(
-        manifestPath,
-        EnvironmentId);
-
-    var trackedItem = Assert.Single(finalManifest.Items);
-
-    Assert.Equal(
-        TrackedItemStatus.AlreadyMissing,
-        trackedItem.Status);
-
-    Assert.Empty(finalManifest.UnresolvedItems);
-
-    // The Run lock must be released.
-    var coordinator = factory.Services
-        .GetRequiredService<RunExecutionCoordinator>();
-
-    var acquired = coordinator.TryAcquire(runId);
-
-    try
-    {
-        Assert.True(
-            acquired,
-            "Manual cleanup did not release the Run lock.");
-    }
-    finally
-    {
-        if (acquired)
-        {
-            coordinator.Release(runId);
-        }
-    }
-}
-
-
-
-[Fact]
-public async Task PostManualCleanup_WhenOneItemFails_ContinuesAndPreservesFailure()
-{
-    // Arrange: Two tracked items in the same persistent manifest.
-    var runId = Guid.NewGuid();
-    var failedItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
-    var successfulItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
-    var createdAt = DateTime.UtcNow;
-
-    var manifestPath = Path.Combine(
-        _directory,
-        "manifests",
-        $"{runId:N}.json");
-
-    var manifest = new
-    {
-        SchemaVersion = 1,
-        RunId = runId.ToString("N"),
-        EnvironmentId,
-        CreatedAtUtc = createdAt,
-        Items = new[]
-        {
-            new
-            {
-                ItemType = "Part",
-                Id = failedItemId,
-                CreatedAtUtc = createdAt,
-                Status = (int)TrackedItemStatus.Active,
-                Source = (int)TestItemSource.Standard,
-                ConfigId = (string?)null,
-                ParentItemId = (string?)null,
-                LastError = (string?)null
-            },
-            new
-            {
-                ItemType = "Part",
-                Id = successfulItemId,
-                CreatedAtUtc = createdAt.AddSeconds(-1),
-                Status = (int)TrackedItemStatus.Active,
-                Source = (int)TestItemSource.Standard,
-                ConfigId = (string?)null,
-                ParentItemId = (string?)null,
-                LastError = (string?)null
-            }
-        }
-    };
-
-    File.WriteAllText(
-        manifestPath,
-        JsonSerializer.Serialize(manifest));
-
-    // Strict Mock: no real Aras connection is allowed.
-    var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
-
-    var executedActions = new List<(string Id, string Action)>();
-
-    arasClientMock
-        .Setup(x => x.GetAccessTokenAsync(
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-        .ReturnsAsync("test-access-token");
-
-    arasClientMock
-        .Setup(x => x.ExecuteAmlAsync(
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-        .ReturnsAsync((
-            string serverUrl,
-            string accessToken,
-            string aml,
-            CancellationToken cancellationToken) =>
-        {
-            Assert.Equal(
-                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
-                serverUrl);
-
-            Assert.Equal("test-access-token", accessToken);
-
-            var document = XDocument.Parse(aml);
-
-            var item = Assert.Single(
-                document.Descendants(),
-                x => x.Name.LocalName == "Item");
-            var itemType = (string?)item.Attribute("type");
-            var targetId = (string?)item.Attribute("id");
-            var action = (string?)item.Attribute("action");
-
-            Assert.Equal("Part", itemType);
-            Assert.NotNull(targetId);
-            Assert.NotNull(action);
-
-            executedActions.Add((targetId!, action!));
-
-            if (targetId == failedItemId)
-            {
-                // First item: Read returns a simulated Aras SOAP fault.
+                // No Delete operation should ever be sent.
                 Assert.Equal("get", action);
 
                 return """
                     <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
-                      <SOAP-ENV:Body>
+                    <SOAP-ENV:Body>
                         <SOAP-ENV:Fault>
-                          <faultcode>1</faultcode>
-                          <faultstring>Simulated read failure</faultstring>
+                        <faultcode>0</faultcode>
+                        <faultstring>No items found</faultstring>
                         </SOAP-ENV:Fault>
-                      </SOAP-ENV:Body>
+                    </SOAP-ENV:Body>
                     </SOAP-ENV:Envelope>
                     """;
-            }
+            });
 
-            if (targetId == successfulItemId)
+        using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
             {
-                if (action == "get")
+                builder.ConfigureAppConfiguration((context, config) =>
                 {
-                    // Before Delete: the item exists.
-                    // After Delete: the item is missing.
-                    var deleteAlreadyExecuted = executedActions.Any(x =>
-                        x.Id == successfulItemId &&
-                        x.Action == "delete");
+                    config.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["Aras:ServerUrl"] =
+                                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+                            ["Aras:Database"] = "InnovatorSolutions",
+                            ["Storage:DataDirectory"] = _directory,
+                            ["ARAS_USERNAME"] = "test-user",
+                            ["ARAS_PASSWORD"] = "test-password"
+                        });
+                });
 
-                    if (!deleteAlreadyExecuted)
-                    {
-                        return $"""
-                            <AML>
-                              <Item type="Part" id="{successfulItemId}" />
-                            </AML>
-                            """;
-                    }
-
-                    return """
-                        <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
-                          <SOAP-ENV:Body>
-                            <SOAP-ENV:Fault>
-                              <faultcode>0</faultcode>
-                              <faultstring>No items found</faultstring>
-                            </SOAP-ENV:Fault>
-                          </SOAP-ENV:Body>
-                        </SOAP-ENV:Envelope>
-                        """;
-                }
-
-                if (action == "delete")
+                builder.ConfigureTestServices(services =>
                 {
-                    return """
-                        <AML>
-                          <Result>OK</Result>
-                        </AML>
-                        """;
-                }
-            }
+                    services.RemoveAll<IArasClient>();
 
-            throw new InvalidOperationException(
-                $"Unexpected AML request: {targetId}, {action}");
-        });
-
-    using var factory = new WebApplicationFactory<Program>()
-        .WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureAppConfiguration((context, config) =>
-            {
-                config.AddInMemoryCollection(
-                    new Dictionary<string, string?>
-                    {
-                        ["Aras:ServerUrl"] =
-                            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
-                        ["Aras:Database"] = "InnovatorSolutions",
-                        ["Storage:DataDirectory"] = _directory,
-                        ["ARAS_USERNAME"] = "test-user",
-                        ["ARAS_PASSWORD"] = "test-password"
-                    });
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+                });
             });
 
-            builder.ConfigureTestServices(services =>
-            {
-                services.RemoveAll<IArasClient>();
+        using var client = factory.CreateClient();
+        await LoginAsync(client, arasClientMock);
 
-                services.AddSingleton<IArasClient>(
-                    arasClientMock.Object);
-            });
-        });
+        // Act
+        var csrfToken = await GetCsrfTokenAsync(client);
 
-    using var client = factory.CreateClient();
-
-    await LoginAsync(client, arasClientMock);
-
-    // Act: Run manual cleanup.
-    var csrfToken = await GetCsrfTokenAsync(client);
-
-    using var response = await PostWithCsrfAsync(
-        client,
-        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-        null,
-        csrfToken);
-    var responseText = await response.Content.ReadAsStringAsync();
-
-    // Assert: HTTP 200 means the cleanup attempt finished,
-    // not that every item was successfully resolved.
-    Assert.Equal(
-        HttpStatusCode.OK,
-        response.StatusCode);
-
-    using var responseDocument = JsonDocument.Parse(responseText);
-    var root = responseDocument.RootElement;
-
-    Assert.Equal(2, root.GetProperty("found").GetInt32());
-    Assert.Equal(1, root.GetProperty("deleted").GetInt32());
-    Assert.Equal(0, root.GetProperty("alreadyMissing").GetInt32());
-    Assert.Equal(1, root.GetProperty("failed").GetInt32());
-    Assert.Equal(1, root.GetProperty("remaining").GetInt32());
-    Assert.False(root.GetProperty("completed").GetBoolean());
-
-    // The failed item's Read must not be followed by Delete.
-    Assert.Equal(
-        new[]
-        {
-            (failedItemId, "get"),
-            (successfulItemId, "get"),
-            (successfulItemId, "delete"),
-            (successfulItemId, "get")
-        },
-        executedActions);
-
-    arasClientMock.Verify(x => x.GetAccessTokenAsync(
-        "test-user",
-        "test-password",
-        "InnovatorSolutions",
-        It.IsAny<CancellationToken>()),
-    Times.Once);
-
-    arasClientMock.Verify(x => x.ExecuteAmlAsync(
-        It.IsAny<string>(),
-        It.IsAny<string>(),
-        It.IsAny<string>(),
-        It.IsAny<CancellationToken>()),
-        Times.Exactly(4));
-
-    arasClientMock.VerifyNoOtherCalls();
-
-    // Reload from disk to verify persistence.
-    var finalManifest = TestDataManifest.Load(
-        manifestPath,
-        EnvironmentId);
-
-    var failedItem = Assert.Single(
-    finalManifest.Items,
-    x => x.Id == failedItemId);
-
-    Assert.Equal(
-        TrackedItemStatus.CleanupFailed,
-        failedItem.Status);
-    
-    Assert.Contains(
-    "Aras Read faultcode: 1",
-    failedItem.LastError ?? string.Empty);
-
-    var successfulItem = Assert.Single(
-    finalManifest.Items,
-    x => x.Id == successfulItemId);
-
-
-    Assert.Equal(
-        TrackedItemStatus.Deleted,
-        successfulItem.Status);
-
-    // Only the failed item remains unresolved.
-    var unresolved = Assert.Single(
-        finalManifest.UnresolvedItems);
-
-    Assert.Equal(failedItemId, unresolved.Id);
-
-    // Verify the Run lock was released.
-    var coordinator = factory.Services
-        .GetRequiredService<RunExecutionCoordinator>();
-
-    var acquired = coordinator.TryAcquire(runId);
-
-    try
-    {
-        Assert.True(
-            acquired,
-            "Manual cleanup did not release its Run lock.");
-    }
-    finally
-    {
-        if (acquired)
-        {
-            coordinator.Release(runId);
-        }
-    }
-}
-
-
-
-[Fact]
-public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
-{
-    // Arrange: Two tracked items in one persistent Run.
-    var runId = Guid.NewGuid();
-    var failedItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
-    var successfulItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
-    var createdAt = DateTime.UtcNow;
-
-    var manifestPath = Path.Combine(
-        _directory,
-        "manifests",
-        $"{runId:N}.json");
-
-    var manifest = new
-    {
-        SchemaVersion = 1,
-        RunId = runId.ToString("N"),
-        EnvironmentId,
-        CreatedAtUtc = createdAt,
-        Items = new[]
-        {
-            new
-            {
-                ItemType = "Part",
-                Id = failedItemId,
-                CreatedAtUtc = createdAt,
-                Status = (int)TrackedItemStatus.Active,
-                Source = (int)TestItemSource.Standard,
-                ConfigId = (string?)null,
-                ParentItemId = (string?)null,
-                LastError = (string?)null
-            },
-            new
-            {
-                ItemType = "Part",
-                Id = successfulItemId,
-                CreatedAtUtc = createdAt.AddSeconds(-1),
-                Status = (int)TrackedItemStatus.Active,
-                Source = (int)TestItemSource.Standard,
-                ConfigId = (string?)null,
-                ParentItemId = (string?)null,
-                LastError = (string?)null
-            }
-        }
-    };
-
-    File.WriteAllText(
-        manifestPath,
-        JsonSerializer.Serialize(manifest));
-
-    var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
-
-    // Each request represents a separate cleanup attempt.
-    var attempt = 1;
-
-    var actions = new List<(int Attempt, string Id, string Action)>();
-
-    // Track which items were deleted in the current simulation.
-    var deletedItems = new HashSet<string>(
-        StringComparer.OrdinalIgnoreCase);
-
-    arasClientMock
-        .Setup(x => x.GetAccessTokenAsync(
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-        .ReturnsAsync("test-access-token");
-
-    arasClientMock
-        .Setup(x => x.ExecuteAmlAsync(
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-        .ReturnsAsync((
-            string serverUrl,
-            string accessToken,
-            string aml,
-            CancellationToken cancellationToken) =>
-        {
-            Assert.Equal(
-                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
-                serverUrl);
-
-            Assert.Equal("test-access-token", accessToken);
-
-            var document = XDocument.Parse(aml);
-
-            var item = Assert.Single(
-                document.Descendants(),
-                x => x.Name.LocalName == "Item");
-
-            var itemType = (string?)item.Attribute("type");
-            var targetId = (string?)item.Attribute("id");
-            var action = (string?)item.Attribute("action");
-
-            Assert.Equal("Part", itemType);
-            Assert.NotNull(targetId);
-            Assert.NotNull(action);
-
-            actions.Add((attempt, targetId!, action!));
-
-            // Attempt 1: Item A fails during its initial Read.
-            if (attempt == 1 && targetId == failedItemId)
-            {
-                Assert.Equal("get", action);
-
-                return """
-                    <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
-                      <SOAP-ENV:Body>
-                        <SOAP-ENV:Fault>
-                          <faultcode>1</faultcode>
-                          <faultstring>Simulated read failure</faultstring>
-                        </SOAP-ENV:Fault>
-                      </SOAP-ENV:Body>
-                    </SOAP-ENV:Envelope>
-                    """;
-            }
-
-            // Attempt 2 must never touch Item B.
-            if (attempt == 2 && targetId == successfulItemId)
-            {
-                throw new InvalidOperationException(
-                    "Already deleted Item B was processed again.");
-            }
-
-            // Attempt 3 must never call Aras.
-            if (attempt == 3)
-            {
-                throw new InvalidOperationException(
-                    "Completed Run unexpectedly called Aras.");
-            }
-
-            if (action == "get")
-            {
-                if (deletedItems.Contains(targetId!))
-                {
-                    return """
-                        <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
-                          <SOAP-ENV:Body>
-                            <SOAP-ENV:Fault>
-                              <faultcode>0</faultcode>
-                              <faultstring>No items found</faultstring>
-                            </SOAP-ENV:Fault>
-                          </SOAP-ENV:Body>
-                        </SOAP-ENV:Envelope>
-                        """;
-                }
-
-                return $"""
-                    <AML>
-                      <Item type="Part" id="{targetId}" />
-                    </AML>
-                    """;
-            }
-
-            if (action == "delete")
-            {
-                deletedItems.Add(targetId!);
-
-                return """
-                    <AML>
-                      <Result>OK</Result>
-                    </AML>
-                    """;
-            }
-
-            throw new InvalidOperationException(
-                $"Unexpected AML action: {action}");
-        });
-
-    using var factory = new WebApplicationFactory<Program>()
-        .WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureAppConfiguration((context, config) =>
-            {
-                config.AddInMemoryCollection(
-                    new Dictionary<string, string?>
-                    {
-                        ["Aras:ServerUrl"] =
-                            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
-                        ["Aras:Database"] = "InnovatorSolutions",
-                        ["Storage:DataDirectory"] = _directory,
-                        ["ARAS_USERNAME"] = "test-user",
-                        ["ARAS_PASSWORD"] = "test-password"
-                    });
-            });
-
-            builder.ConfigureTestServices(services =>
-            {
-                services.RemoveAll<IArasClient>();
-
-                services.AddSingleton<IArasClient>(
-                    arasClientMock.Object);
-            });
-        });
-
-    using var client = factory.CreateClient();
-
-    await LoginAsync(client, arasClientMock);
-
-    var endpoint =
-        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup";
-
-    // =====================================================
-    // Attempt 1: A fails, B succeeds.
-    // =====================================================
-
-    using (var response = await client.PostAsync(
-        endpoint,
-        content: null))
-    {
+        using var response = await PostWithCsrfAsync(
+            client,
+            $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
+            null,
+            csrfToken);
         var responseText =
             await response.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // Assert: Cleanup completed without another Delete.
+        Assert.Equal(
+            HttpStatusCode.OK,
+            response.StatusCode);
 
-        using var document = JsonDocument.Parse(responseText);
-        var root = document.RootElement;
+        using var responseDocument = JsonDocument.Parse(responseText);
+        var root = responseDocument.RootElement;
+
+        Assert.Equal(1, root.GetProperty("found").GetInt32());
+        Assert.Equal(0, root.GetProperty("deleted").GetInt32());
+        Assert.Equal(1, root.GetProperty("alreadyMissing").GetInt32());
+        Assert.Equal(0, root.GetProperty("failed").GetInt32());
+        Assert.Equal(0, root.GetProperty("remaining").GetInt32());
+
+        Assert.True(root.GetProperty("completed").GetBoolean());
+
+        // Exactly one GET, no DELETE.
+        Assert.Equal(new[] { "get" }, actions);
+
+    
+        // Login obtains the token once.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+            "test-user",
+            "test-password",
+            "InnovatorSolutions",
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Cleanup must not request another token.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        arasClientMock.Verify(x => x.ExecuteAmlAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        arasClientMock.VerifyNoOtherCalls();
+
+        // Reload the manifest from disk and verify the persisted state.
+        var finalManifest = TestDataManifest.Load(
+            manifestPath,
+            EnvironmentId);
+
+        var trackedItem = Assert.Single(finalManifest.Items);
+
+        Assert.Equal(
+            TrackedItemStatus.AlreadyMissing,
+            trackedItem.Status);
+
+        Assert.Empty(finalManifest.UnresolvedItems);
+
+        // The Run lock must be released.
+        var coordinator = factory.Services
+            .GetRequiredService<RunExecutionCoordinator>();
+
+        var acquired = coordinator.TryAcquire(runId);
+
+        try
+        {
+            Assert.True(
+                acquired,
+                "Manual cleanup did not release the Run lock.");
+        }
+        finally
+        {
+            if (acquired)
+            {
+                coordinator.Release(runId);
+            }
+        }
+    }
+
+
+
+    [Fact]
+    public async Task PostManualCleanup_WhenOneItemFails_ContinuesAndPreservesFailure()
+    {
+        // Arrange: Two tracked items in the same persistent manifest.
+        var runId = Guid.NewGuid();
+        var failedItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var successfulItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var createdAt = DateTime.UtcNow;
+
+        var manifestPath = Path.Combine(
+            _directory,
+            "manifests",
+            $"{runId:N}.json");
+
+        var manifest = new
+        {
+            SchemaVersion = 1,
+            RunId = runId.ToString("N"),
+            EnvironmentId,
+            CreatedAtUtc = createdAt,
+            Items = new[]
+            {
+                new
+                {
+                    ItemType = "Part",
+                    Id = failedItemId,
+                    CreatedAtUtc = createdAt,
+                    Status = (int)TrackedItemStatus.Active,
+                    Source = (int)TestItemSource.Standard,
+                    ConfigId = (string?)null,
+                    ParentItemId = (string?)null,
+                    LastError = (string?)null
+                },
+                new
+                {
+                    ItemType = "Part",
+                    Id = successfulItemId,
+                    CreatedAtUtc = createdAt.AddSeconds(-1),
+                    Status = (int)TrackedItemStatus.Active,
+                    Source = (int)TestItemSource.Standard,
+                    ConfigId = (string?)null,
+                    ParentItemId = (string?)null,
+                    LastError = (string?)null
+                }
+            }
+        };
+
+        File.WriteAllText(
+            manifestPath,
+            JsonSerializer.Serialize(manifest));
+
+        // Strict Mock: no real Aras connection is allowed.
+        var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
+
+        var executedActions = new List<(string Id, string Action)>();
+
+        arasClientMock
+            .Setup(x => x.GetAccessTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-access-token");
+
+        arasClientMock
+            .Setup(x => x.ExecuteAmlAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((
+                string serverUrl,
+                string accessToken,
+                string aml,
+                CancellationToken cancellationToken) =>
+            {
+                Assert.Equal(
+                    "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+                    serverUrl);
+
+                Assert.Equal("test-access-token", accessToken);
+
+                var document = XDocument.Parse(aml);
+
+                var item = Assert.Single(
+                    document.Descendants(),
+                    x => x.Name.LocalName == "Item");
+                var itemType = (string?)item.Attribute("type");
+                var targetId = (string?)item.Attribute("id");
+                var action = (string?)item.Attribute("action");
+
+                Assert.Equal("Part", itemType);
+                Assert.NotNull(targetId);
+                Assert.NotNull(action);
+
+                executedActions.Add((targetId!, action!));
+
+                if (targetId == failedItemId)
+                {
+                    // First item: Read returns a simulated Aras SOAP fault.
+                    Assert.Equal("get", action);
+
+                    return """
+                        <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+                        <SOAP-ENV:Body>
+                            <SOAP-ENV:Fault>
+                            <faultcode>1</faultcode>
+                            <faultstring>Simulated read failure</faultstring>
+                            </SOAP-ENV:Fault>
+                        </SOAP-ENV:Body>
+                        </SOAP-ENV:Envelope>
+                        """;
+                }
+
+                if (targetId == successfulItemId)
+                {
+                    if (action == "get")
+                    {
+                        // Before Delete: the item exists.
+                        // After Delete: the item is missing.
+                        var deleteAlreadyExecuted = executedActions.Any(x =>
+                            x.Id == successfulItemId &&
+                            x.Action == "delete");
+
+                        if (!deleteAlreadyExecuted)
+                        {
+                            return $"""
+                                <AML>
+                                <Item type="Part" id="{successfulItemId}" />
+                                </AML>
+                                """;
+                        }
+
+                        return """
+                            <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+                            <SOAP-ENV:Body>
+                                <SOAP-ENV:Fault>
+                                <faultcode>0</faultcode>
+                                <faultstring>No items found</faultstring>
+                                </SOAP-ENV:Fault>
+                            </SOAP-ENV:Body>
+                            </SOAP-ENV:Envelope>
+                            """;
+                    }
+
+                    if (action == "delete")
+                    {
+                        return """
+                            <AML>
+                            <Result>OK</Result>
+                            </AML>
+                            """;
+                    }
+                }
+
+                throw new InvalidOperationException(
+                    $"Unexpected AML request: {targetId}, {action}");
+            });
+
+        using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((context, config) =>
+                {
+                    config.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["Aras:ServerUrl"] =
+                                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+                            ["Aras:Database"] = "InnovatorSolutions",
+                            ["Storage:DataDirectory"] = _directory,
+                            ["ARAS_USERNAME"] = "test-user",
+                            ["ARAS_PASSWORD"] = "test-password"
+                        });
+                });
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IArasClient>();
+
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+                });
+            });
+
+        using var client = factory.CreateClient();
+
+        await LoginAsync(client, arasClientMock);
+
+        // Act: Run manual cleanup.
+        var csrfToken = await GetCsrfTokenAsync(client);
+
+        using var response = await PostWithCsrfAsync(
+            client,
+            $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
+            null,
+            csrfToken);
+        var responseText = await response.Content.ReadAsStringAsync();
+
+        // Assert: HTTP 200 means the cleanup attempt finished,
+        // not that every item was successfully resolved.
+        Assert.Equal(
+            HttpStatusCode.OK,
+            response.StatusCode);
+
+        using var responseDocument = JsonDocument.Parse(responseText);
+        var root = responseDocument.RootElement;
 
         Assert.Equal(2, root.GetProperty("found").GetInt32());
         Assert.Equal(1, root.GetProperty("deleted").GetInt32());
@@ -1858,245 +1825,721 @@ public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
         Assert.Equal(1, root.GetProperty("failed").GetInt32());
         Assert.Equal(1, root.GetProperty("remaining").GetInt32());
         Assert.False(root.GetProperty("completed").GetBoolean());
-    }
 
-    // Reload the first attempt's persisted state.
-    var afterFirst = TestDataManifest.Load(
-        manifestPath,
-        EnvironmentId);
+        // The failed item's Read must not be followed by Delete.
+        Assert.Equal(
+            new[]
+            {
+                (failedItemId, "get"),
+                (successfulItemId, "get"),
+                (successfulItemId, "delete"),
+                (successfulItemId, "get")
+            },
+            executedActions);
 
-    Assert.Equal(
-        TrackedItemStatus.CleanupFailed,
-        Assert.Single(
-            afterFirst.Items,
-            x => x.Id == failedItemId).Status);
-
-    Assert.Equal(
-        TrackedItemStatus.Deleted,
-        Assert.Single(
-            afterFirst.Items,
-            x => x.Id == successfulItemId).Status);
-
-    Assert.Single(afterFirst.UnresolvedItems);
-
-    Assert.Equal(
-        new[]
-        {
-            (1, failedItemId, "get"),
-            (1, successfulItemId, "get"),
-            (1, successfulItemId, "delete"),
-            (1, successfulItemId, "get")
-        },
-        actions);
-
-    // =====================================================
-    // Attempt 2: Retry only A.
-    // =====================================================
-
-    attempt = 2;
-
-    var csrfToken = await GetCsrfTokenAsync(client);
-
-    using (var response = await PostWithCsrfAsync(
-        client,
-        endpoint,
-        null,
-        csrfToken))
-    {
-            var responseText =
-            await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        using var document = JsonDocument.Parse(responseText);
-        var root = document.RootElement;
-
-        Assert.Equal(1, root.GetProperty("found").GetInt32());
-        Assert.Equal(1, root.GetProperty("deleted").GetInt32());
-        Assert.Equal(0, root.GetProperty("alreadyMissing").GetInt32());
-        Assert.Equal(0, root.GetProperty("failed").GetInt32());
-        Assert.Equal(0, root.GetProperty("remaining").GetInt32());
-        Assert.True(root.GetProperty("completed").GetBoolean());
-    }
-
-    // Verify only A was processed during the retry.
-    Assert.Equal(
-        new[]
-        {
-            (2, failedItemId, "get"),
-            (2, failedItemId, "delete"),
-            (2, failedItemId, "get")
-        },
-        actions.Where(x => x.Attempt == 2));
-
-    // Verify final state was persisted to disk.
-    var afterSecond = TestDataManifest.Load(
-        manifestPath,
-        EnvironmentId);
-
-    Assert.Empty(afterSecond.UnresolvedItems);
-
-    Assert.Equal(2, afterSecond.Items.Count);
-
-    Assert.All(
-        afterSecond.Items,
-        item => Assert.Equal(
-            TrackedItemStatus.Deleted,
-            item.Status));
-
-    // =====================================================
-    // Attempt 3: Completed Run must be a no-op.
-    // =====================================================
-
-    attempt = 3;
-
-    var callsBeforeThird = actions.Count;
-
-    var manifestBeforeThird = File.ReadAllBytes(manifestPath);
-
-    csrfToken = await GetCsrfTokenAsync(client);
-
-    using (var response = await PostWithCsrfAsync(
-        client,
-        endpoint,
-        null,
-        csrfToken))
-    {
-        var responseText =
-            await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        using var document = JsonDocument.Parse(responseText);
-        var root = document.RootElement;
-
-        Assert.Equal(0, root.GetProperty("found").GetInt32());
-        Assert.Equal(0, root.GetProperty("deleted").GetInt32());
-        Assert.Equal(0, root.GetProperty("failed").GetInt32());
-        Assert.Equal(0, root.GetProperty("remaining").GetInt32());
-        Assert.True(root.GetProperty("completed").GetBoolean());
-    }
-
-    Assert.Equal(callsBeforeThird, actions.Count);
-
-   // Login obtains the token exactly once.
-    arasClientMock.Verify(x => x.GetAccessTokenAsync(
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
             "test-user",
             "test-password",
             "InnovatorSolutions",
             It.IsAny<CancellationToken>()),
         Times.Once);
 
-    // The legacy three-argument overload must never be used.
-    arasClientMock.Verify(x => x.GetAccessTokenAsync(
+        arasClientMock.Verify(x => x.ExecuteAmlAsync(
+            It.IsAny<string>(),
             It.IsAny<string>(),
             It.IsAny<string>(),
             It.IsAny<CancellationToken>()),
-        Times.Never);
+            Times.Exactly(4));
 
-    // Attempt 1: 4 AML calls.
-    // Attempt 2: 3 AML calls.
-    // Attempt 3: 0 AML calls.
-    arasClientMock.Verify(x => x.ExecuteAmlAsync(
-        It.IsAny<string>(),
-        It.IsAny<string>(),
-        It.IsAny<string>(),
-        It.IsAny<CancellationToken>()),
-        Times.Exactly(7));
+        arasClientMock.VerifyNoOtherCalls();
 
-    arasClientMock.VerifyNoOtherCalls();
+        // Reload from disk to verify persistence.
+        var finalManifest = TestDataManifest.Load(
+            manifestPath,
+            EnvironmentId);
 
-    // The final no-op request must not change the manifest.
-    var afterThird = TestDataManifest.Load(
-        manifestPath,
-        EnvironmentId);
+        var failedItem = Assert.Single(
+        finalManifest.Items,
+        x => x.Id == failedItemId);
 
-    Assert.Empty(afterThird.UnresolvedItems);
+        Assert.Equal(
+            TrackedItemStatus.CleanupFailed,
+            failedItem.Status);
+        
+        Assert.Contains(
+        "Aras Read faultcode: 1",
+        failedItem.LastError ?? string.Empty);
 
-    // Verify the third POST did not modify manifest content.
-    Assert.Equal(
-        manifestBeforeThird,
-        File.ReadAllBytes(manifestPath));
+        var successfulItem = Assert.Single(
+        finalManifest.Items,
+        x => x.Id == successfulItemId);
 
-    // Verify the Run lock is released.
-    var coordinator = factory.Services
-        .GetRequiredService<RunExecutionCoordinator>();
 
-    var acquired = coordinator.TryAcquire(runId);
+        Assert.Equal(
+            TrackedItemStatus.Deleted,
+            successfulItem.Status);
 
-    try
-    {
-        Assert.True(
-            acquired,
-            "Manual cleanup did not release its Run lock.");
-    }
-    finally
-    {
-        if (acquired)
+        // Only the failed item remains unresolved.
+        var unresolved = Assert.Single(
+            finalManifest.UnresolvedItems);
+
+        Assert.Equal(failedItemId, unresolved.Id);
+
+        // Verify the Run lock was released.
+        var coordinator = factory.Services
+            .GetRequiredService<RunExecutionCoordinator>();
+
+        var acquired = coordinator.TryAcquire(runId);
+
+        try
         {
-            coordinator.Release(runId);
+            Assert.True(
+                acquired,
+                "Manual cleanup did not release its Run lock.");
         }
-    }
-}
-
-   
-[Fact]
-public async Task PostManualCleanup_WithoutSession_ReturnsUnauthorized()
-{
-    var runId = Guid.NewGuid();
-
-    using var factory = new WebApplicationFactory<Program>()
-        .WithWebHostBuilder(builder =>
+        finally
         {
-            builder.ConfigureAppConfiguration((context, config) =>
+            if (acquired)
             {
-                config.AddInMemoryCollection(
-                    new Dictionary<string, string?>
-                    {
-                        ["Aras:ServerUrl"] =
-                            "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
-
-                        ["Aras:Database"] = "InnovatorSolutions",
-
-                        ["Storage:DataDirectory"] = _directory
-                    });
-            });
-        });
-
-    using var client = factory.CreateClient();
-
-    var csrfToken = await GetCsrfTokenAsync(client);
-
-    using var response = await PostWithCsrfAsync(
-        client,
-        $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
-        null,
-        csrfToken);
-
-    Assert.Equal(
-        HttpStatusCode.Unauthorized,
-        response.StatusCode);
-
-    // A missing session must not acquire or leave a Run lock.
-    var coordinator = factory.Services
-        .GetRequiredService<RunExecutionCoordinator>();
-
-    var acquired = coordinator.TryAcquire(runId);
-
-    try
-    {
-        Assert.True(
-            acquired,
-            "The unauthorized cleanup request did not release its Run lock.");
-    }
-    finally
-    {
-        if (acquired)
-        {
-            coordinator.Release(runId);
+                coordinator.Release(runId);
+            }
         }
     }
-}
+
+
+
+    [Fact]
+    public async Task PostManualCleanup_WhenRetried_CleansOnlyRemainingFailedItem()
+    {
+        // Arrange: Two tracked items in one persistent Run.
+        var runId = Guid.NewGuid();
+        var failedItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var successfulItemId = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var createdAt = DateTime.UtcNow;
+
+        var manifestPath = Path.Combine(
+            _directory,
+            "manifests",
+            $"{runId:N}.json");
+
+        var manifest = new
+        {
+            SchemaVersion = 1,
+            RunId = runId.ToString("N"),
+            EnvironmentId,
+            CreatedAtUtc = createdAt,
+            Items = new[]
+            {
+                new
+                {
+                    ItemType = "Part",
+                    Id = failedItemId,
+                    CreatedAtUtc = createdAt,
+                    Status = (int)TrackedItemStatus.Active,
+                    Source = (int)TestItemSource.Standard,
+                    ConfigId = (string?)null,
+                    ParentItemId = (string?)null,
+                    LastError = (string?)null
+                },
+                new
+                {
+                    ItemType = "Part",
+                    Id = successfulItemId,
+                    CreatedAtUtc = createdAt.AddSeconds(-1),
+                    Status = (int)TrackedItemStatus.Active,
+                    Source = (int)TestItemSource.Standard,
+                    ConfigId = (string?)null,
+                    ParentItemId = (string?)null,
+                    LastError = (string?)null
+                }
+            }
+        };
+
+        File.WriteAllText(
+            manifestPath,
+            JsonSerializer.Serialize(manifest));
+
+        var arasClientMock = new Mock<IArasClient>(MockBehavior.Strict);
+
+        // Each request represents a separate cleanup attempt.
+        var attempt = 1;
+
+        var actions = new List<(int Attempt, string Id, string Action)>();
+
+        // Track which items were deleted in the current simulation.
+        var deletedItems = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+
+        arasClientMock
+            .Setup(x => x.GetAccessTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-access-token");
+
+        arasClientMock
+            .Setup(x => x.ExecuteAmlAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((
+                string serverUrl,
+                string accessToken,
+                string aml,
+                CancellationToken cancellationToken) =>
+            {
+                Assert.Equal(
+                    "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+                    serverUrl);
+
+                Assert.Equal("test-access-token", accessToken);
+
+                var document = XDocument.Parse(aml);
+
+                var item = Assert.Single(
+                    document.Descendants(),
+                    x => x.Name.LocalName == "Item");
+
+                var itemType = (string?)item.Attribute("type");
+                var targetId = (string?)item.Attribute("id");
+                var action = (string?)item.Attribute("action");
+
+                Assert.Equal("Part", itemType);
+                Assert.NotNull(targetId);
+                Assert.NotNull(action);
+
+                actions.Add((attempt, targetId!, action!));
+
+                // Attempt 1: Item A fails during its initial Read.
+                if (attempt == 1 && targetId == failedItemId)
+                {
+                    Assert.Equal("get", action);
+
+                    return """
+                        <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+                        <SOAP-ENV:Body>
+                            <SOAP-ENV:Fault>
+                            <faultcode>1</faultcode>
+                            <faultstring>Simulated read failure</faultstring>
+                            </SOAP-ENV:Fault>
+                        </SOAP-ENV:Body>
+                        </SOAP-ENV:Envelope>
+                        """;
+                }
+
+                // Attempt 2 must never touch Item B.
+                if (attempt == 2 && targetId == successfulItemId)
+                {
+                    throw new InvalidOperationException(
+                        "Already deleted Item B was processed again.");
+                }
+
+                // Attempt 3 must never call Aras.
+                if (attempt == 3)
+                {
+                    throw new InvalidOperationException(
+                        "Completed Run unexpectedly called Aras.");
+                }
+
+                if (action == "get")
+                {
+                    if (deletedItems.Contains(targetId!))
+                    {
+                        return """
+                            <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+                            <SOAP-ENV:Body>
+                                <SOAP-ENV:Fault>
+                                <faultcode>0</faultcode>
+                                <faultstring>No items found</faultstring>
+                                </SOAP-ENV:Fault>
+                            </SOAP-ENV:Body>
+                            </SOAP-ENV:Envelope>
+                            """;
+                    }
+
+                    return $"""
+                        <AML>
+                        <Item type="Part" id="{targetId}" />
+                        </AML>
+                        """;
+                }
+
+                if (action == "delete")
+                {
+                    deletedItems.Add(targetId!);
+
+                    return """
+                        <AML>
+                        <Result>OK</Result>
+                        </AML>
+                        """;
+                }
+
+                throw new InvalidOperationException(
+                    $"Unexpected AML action: {action}");
+            });
+
+        using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((context, config) =>
+                {
+                    config.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["Aras:ServerUrl"] =
+                                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+                            ["Aras:Database"] = "InnovatorSolutions",
+                            ["Storage:DataDirectory"] = _directory,
+                            ["ARAS_USERNAME"] = "test-user",
+                            ["ARAS_PASSWORD"] = "test-password"
+                        });
+                });
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IArasClient>();
+
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+                });
+            });
+
+        using var client = factory.CreateClient();
+
+        await LoginAsync(client, arasClientMock);
+
+        var endpoint =
+            $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup";
+
+        // =====================================================
+        // Attempt 1: A fails, B succeeds.
+        // =====================================================
+
+        var csrfToken = await GetCsrfTokenAsync(client);
+
+        using (var response = await PostWithCsrfAsync(
+            client,
+            endpoint,
+            null,
+            csrfToken))
+        {
+            var responseText =
+                await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            using var document = JsonDocument.Parse(responseText);
+            var root = document.RootElement;
+
+            Assert.Equal(2, root.GetProperty("found").GetInt32());
+            Assert.Equal(1, root.GetProperty("deleted").GetInt32());
+            Assert.Equal(0, root.GetProperty("alreadyMissing").GetInt32());
+            Assert.Equal(1, root.GetProperty("failed").GetInt32());
+            Assert.Equal(1, root.GetProperty("remaining").GetInt32());
+            Assert.False(root.GetProperty("completed").GetBoolean());
+        }
+
+        // Reload the first attempt's persisted state.
+        var afterFirst = TestDataManifest.Load(
+            manifestPath,
+            EnvironmentId);
+
+        Assert.Equal(
+            TrackedItemStatus.CleanupFailed,
+            Assert.Single(
+                afterFirst.Items,
+                x => x.Id == failedItemId).Status);
+
+        Assert.Equal(
+            TrackedItemStatus.Deleted,
+            Assert.Single(
+                afterFirst.Items,
+                x => x.Id == successfulItemId).Status);
+
+        Assert.Single(afterFirst.UnresolvedItems);
+
+        Assert.Equal(
+            new[]
+            {
+                (1, failedItemId, "get"),
+                (1, successfulItemId, "get"),
+                (1, successfulItemId, "delete"),
+                (1, successfulItemId, "get")
+            },
+            actions);
+
+        // =====================================================
+        // Attempt 2: Retry only A.
+        // =====================================================
+
+        attempt = 2;
+
+        csrfToken = await GetCsrfTokenAsync(client);
+
+        using (var response = await PostWithCsrfAsync(
+            client,
+            endpoint,
+            null,
+            csrfToken))
+        {
+                var responseText =
+                await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            using var document = JsonDocument.Parse(responseText);
+            var root = document.RootElement;
+
+            Assert.Equal(1, root.GetProperty("found").GetInt32());
+            Assert.Equal(1, root.GetProperty("deleted").GetInt32());
+            Assert.Equal(0, root.GetProperty("alreadyMissing").GetInt32());
+            Assert.Equal(0, root.GetProperty("failed").GetInt32());
+            Assert.Equal(0, root.GetProperty("remaining").GetInt32());
+            Assert.True(root.GetProperty("completed").GetBoolean());
+        }
+
+        // Verify only A was processed during the retry.
+        Assert.Equal(
+            new[]
+            {
+                (2, failedItemId, "get"),
+                (2, failedItemId, "delete"),
+                (2, failedItemId, "get")
+            },
+            actions.Where(x => x.Attempt == 2));
+
+        // Verify final state was persisted to disk.
+        var afterSecond = TestDataManifest.Load(
+            manifestPath,
+            EnvironmentId);
+
+        Assert.Empty(afterSecond.UnresolvedItems);
+
+        Assert.Equal(2, afterSecond.Items.Count);
+
+        Assert.All(
+            afterSecond.Items,
+            item => Assert.Equal(
+                TrackedItemStatus.Deleted,
+                item.Status));
+
+        // =====================================================
+        // Attempt 3: Completed Run must be a no-op.
+        // =====================================================
+
+        attempt = 3;
+
+        var callsBeforeThird = actions.Count;
+
+        var manifestBeforeThird = File.ReadAllBytes(manifestPath);
+
+        csrfToken = await GetCsrfTokenAsync(client);
+
+        using (var response = await PostWithCsrfAsync(
+            client,
+            endpoint,
+            null,
+            csrfToken))
+        {
+            var responseText =
+                await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            using var document = JsonDocument.Parse(responseText);
+            var root = document.RootElement;
+
+            Assert.Equal(0, root.GetProperty("found").GetInt32());
+            Assert.Equal(0, root.GetProperty("deleted").GetInt32());
+            Assert.Equal(0, root.GetProperty("failed").GetInt32());
+            Assert.Equal(0, root.GetProperty("remaining").GetInt32());
+            Assert.True(root.GetProperty("completed").GetBoolean());
+        }
+
+        Assert.Equal(callsBeforeThird, actions.Count);
+
+    // Login obtains the token exactly once.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+                "test-user",
+                "test-password",
+                "InnovatorSolutions",
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // The legacy three-argument overload must never be used.
+        arasClientMock.Verify(x => x.GetAccessTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        // Attempt 1: 4 AML calls.
+        // Attempt 2: 3 AML calls.
+        // Attempt 3: 0 AML calls.
+        arasClientMock.Verify(x => x.ExecuteAmlAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
+            Times.Exactly(7));
+
+        arasClientMock.VerifyNoOtherCalls();
+
+        // The final no-op request must not change the manifest.
+        var afterThird = TestDataManifest.Load(
+            manifestPath,
+            EnvironmentId);
+
+        Assert.Empty(afterThird.UnresolvedItems);
+
+        // Verify the third POST did not modify manifest content.
+        Assert.Equal(
+            manifestBeforeThird,
+            File.ReadAllBytes(manifestPath));
+
+        // Verify the Run lock is released.
+        var coordinator = factory.Services
+            .GetRequiredService<RunExecutionCoordinator>();
+
+        var acquired = coordinator.TryAcquire(runId);
+
+        try
+        {
+            Assert.True(
+                acquired,
+                "Manual cleanup did not release its Run lock.");
+        }
+        finally
+        {
+            if (acquired)
+            {
+                coordinator.Release(runId);
+            }
+        }
+    }
+
+    
+    [Fact]
+    public async Task PostManualCleanup_WithoutSession_ReturnsUnauthorized()
+    {
+        var runId = Guid.NewGuid();
+
+        using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((context, config) =>
+                {
+                    config.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["Aras:ServerUrl"] =
+                                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+
+                            ["Aras:Database"] = "InnovatorSolutions",
+
+                            ["Storage:DataDirectory"] = _directory
+                        });
+                });
+            });
+
+        using var client = factory.CreateClient();
+
+        var csrfToken = await GetCsrfTokenAsync(client);
+
+        using var response = await PostWithCsrfAsync(
+            client,
+            $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup",
+            null,
+            csrfToken);
+
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            response.StatusCode);
+
+        // A missing session must not acquire or leave a Run lock.
+        var coordinator = factory.Services
+            .GetRequiredService<RunExecutionCoordinator>();
+
+        var acquired = coordinator.TryAcquire(runId);
+
+        try
+        {
+            Assert.True(
+                acquired,
+                "The unauthorized cleanup request did not release its Run lock.");
+        }
+        finally
+        {
+            if (acquired)
+            {
+                coordinator.Release(runId);
+            }
+        }
+    }
+
+    
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PostManualCleanup_InvalidCsrf_ReturnsBadRequestWithoutSideEffects(
+        bool sendInvalidToken)
+    {
+        // Arrange: Create a pending manifest.
+        var runId = Guid.NewGuid();
+
+        var manifestPath = Path.Combine(
+            _directory,
+            "manifests",
+            $"{runId:N}.json");
+
+        var createdAt = DateTime.UtcNow;
+
+        var manifest = new
+        {
+            SchemaVersion = 1,
+            RunId = runId.ToString("N"),
+            EnvironmentId,
+            CreatedAtUtc = createdAt,
+            Items = new[]
+            {
+                new
+                {
+                    ItemType = "Part",
+                    Id = Guid.NewGuid().ToString("N").ToUpperInvariant(),
+                    CreatedAtUtc = createdAt,
+                    Status = (int)TrackedItemStatus.Active,
+                    Source = 0,
+                    ConfigId = (string?)null,
+                    ParentItemId = (string?)null,
+                    LastError = (string?)null
+                }
+            }
+        };
+
+        File.WriteAllText(
+            manifestPath,
+            JsonSerializer.Serialize(manifest));
+
+        var manifestBefore =
+            await File.ReadAllBytesAsync(manifestPath);
+
+        var arasClientMock =
+            new Mock<IArasClient>(MockBehavior.Strict);
+
+        using var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((_, config) =>
+                {
+                    config.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["Aras:ServerUrl"] =
+                                "http://localhost/InnovatorServer/Server/InnovatorServer.aspx",
+                            ["Aras:Database"] = "InnovatorSolutions",
+                            ["Aras:DatabaseListUrl"] =
+                                "https://aras.test/server/DBList.aspx",
+                            ["Storage:DataDirectory"] = _directory
+                        });
+                });
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IArasClient>();
+                    services.AddSingleton<IArasClient>(
+                        arasClientMock.Object);
+
+                    var httpClientFactoryMock =
+                        new Mock<IHttpClientFactory>();
+
+                    httpClientFactoryMock
+                        .Setup(x => x.CreateClient(
+                            It.IsAny<string>()))
+                        .Returns(() => new HttpClient(
+                            new FakeDatabaseListHandler()));
+
+                    services.RemoveAll<IHttpClientFactory>();
+                    services.AddSingleton<IHttpClientFactory>(
+                        httpClientFactoryMock.Object);
+                });
+            });
+
+        using var client = factory.CreateClient();
+
+        // Establish a valid authenticated Session.
+        await LoginAsync(client, arasClientMock);
+
+        var endpoint =
+            $"/api/Benchmark/pending-cleanup/{runId:N}/cleanup";
+
+        // Act: Send a POST with missing or invalid CSRF token.
+        using var response = sendInvalidToken
+            ? await PostWithCsrfAsync(
+                client,
+                endpoint,
+                null,
+                "invalid-csrf-token")
+            : await client.PostAsync(
+                endpoint,
+                content: null);
+
+        // Assert: Antiforgery validation rejects the request.
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            response.StatusCode);
+
+        // Manifest must remain unchanged.
+        Assert.True(File.Exists(manifestPath));
+
+        var manifestAfter =
+            await File.ReadAllBytesAsync(manifestPath);
+
+        Assert.Equal(manifestBefore, manifestAfter);
+
+        // Login should be the only OAuth token request.
+        arasClientMock.Verify(
+            x => x.GetAccessTokenAsync(
+                "test-user",
+                "test-password",
+                "InnovatorSolutions",
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Cleanup must not execute Aras AML.
+        arasClientMock.Verify(
+            x => x.ExecuteAmlAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        arasClientMock.VerifyNoOtherCalls();
+
+        // A rejected request must not hold the Run lock.
+        var coordinator = factory.Services
+            .GetRequiredService<RunExecutionCoordinator>();
+
+        var acquired = coordinator.TryAcquire(runId);
+
+        try
+        {
+            Assert.True(
+                acquired,
+                "CSRF-rejected cleanup request left the Run lock occupied.");
+        }
+        finally
+        {
+            if (acquired)
+            {
+                coordinator.Release(runId);
+            }
+        }
+    }
+
+    
 
     private static async Task<string> GetCsrfTokenAsync(
         HttpClient client)
