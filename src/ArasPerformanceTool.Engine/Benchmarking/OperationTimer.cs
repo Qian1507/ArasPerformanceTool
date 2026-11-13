@@ -36,6 +36,15 @@ public static class OperationTimer
             // Rethrow immediately when cancellation was intentionally triggered by the caller
             throw;
         }
+        catch (HttpRequestException ex)
+            when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            // Authentication failure affects the entire run,
+            // not just a single benchmark measurement.
+            throw;
+        }
+
+        
         catch (Exception ex)
         {
             // Capture elapsed latency up to the point of failure along with the error description

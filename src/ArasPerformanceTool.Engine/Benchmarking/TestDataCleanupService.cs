@@ -190,6 +190,13 @@ public async Task<CleanupExecutionResult> CleanupAsync(
             // Keep the current state for recovery.
             throw;
         }
+        catch (HttpRequestException ex)
+            when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            // Stop cleanup without changing the current item's state.
+            // Previously persisted changes remain available for recovery.
+            throw;
+        }
         catch (Exception ex)
         {
              // Temporary diagnostic output: retain exception type and stack trace.

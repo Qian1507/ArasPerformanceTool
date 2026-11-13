@@ -802,8 +802,8 @@ public sealed class PendingCleanupApiTests : IDisposable
             It.IsAny<CancellationToken>()),
             Times.Never);
 
-        // Environment validation must happen before authentication
-        // or any AML request.
+        // After login, the rejected cleanup request must not
+        // request another OAuth token or execute AML.
         arasClientMock.VerifyNoOtherCalls();
 
     }

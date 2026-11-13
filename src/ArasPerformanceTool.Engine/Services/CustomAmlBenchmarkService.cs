@@ -6,7 +6,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Linq;
-
+using System.Net;
+using ArasPerformanceTool.Engine.Exceptions;
 using ArasPerformanceTool.Engine.Aras;
 using ArasPerformanceTool.Engine.Benchmarking;
 using ArasPerformanceTool.Engine.Models;
@@ -190,6 +191,8 @@ public async Task<SingleAmlExecutionResult> RunAsync(
     string? cleanupError = null;
     string? sampleResponseXml = null;
 
+    bool benchmarkAuthenticationFailed = false;
+
     try
     {
         report = await runner.RunAsync(
@@ -261,9 +264,17 @@ public async Task<SingleAmlExecutionResult> RunAsync(
             },
             cancellationToken);
     }
+
+    catch (BenchmarkAuthenticationException)
+    {
+        // The runner has already captured the partial report.
+        // Do not use the rejected token for automatic cleanup.
+        benchmarkAuthenticationFailed = true;
+        throw;
+    }
     finally
     {
-        if (action == "add")
+        if (action == "add" && !benchmarkAuthenticationFailed)
         {
             try
             {
@@ -299,6 +310,25 @@ public async Task<SingleAmlExecutionResult> RunAsync(
                     $"RunId={runId}. " +
                     "Residual test records must be checked.";
             }
+
+            catch (HttpRequestException ex)
+                when (ex.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                // The benchmark may already have completed successfully,
+                // but its automatic cleanup cannot continue.
+
+                if (report is not null)
+                {
+                    throw new BenchmarkAuthenticationException(
+                        report,
+                        ex);
+                }
+
+                // No benchmark report is available.
+                // Preserve the original authentication failure.
+                throw;
+            }
+
             catch (Exception ex)
             {
                 // Do not discard the benchmark report because

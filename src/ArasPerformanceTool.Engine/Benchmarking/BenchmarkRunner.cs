@@ -1,10 +1,9 @@
-
 using System.Diagnostics;
+using System.Net;
+using ArasPerformanceTool.Engine.Exceptions;
+
 
 namespace ArasPerformanceTool.Engine.Benchmarking;
-
-
-
 
 public class BenchmarkRunner
 {
@@ -18,13 +17,16 @@ public class BenchmarkRunner
         ArgumentNullException.ThrowIfNull(workloadAction);
         ArgumentException.ThrowIfNullOrWhiteSpace(workloadName);
         ArgumentException.ThrowIfNullOrWhiteSpace(config.ItemType);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(config.Iterations);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(config.Concurrency);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(
+            config.Iterations);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(
+            config.Concurrency);
 
-        // Store one result per iteration, preserving index order
-        var measurements = new OperationMeasurement[config.Iterations];
+        var measurements =
+            new OperationMeasurement?[config.Iterations];
 
-        // Measure the entire benchmark execution
+        HttpRequestException? authenticationFailure = null;
+
         var overallStart = Stopwatch.GetTimestamp();
 
         var parallelOptions = new ParallelOptions
@@ -33,29 +35,73 @@ public class BenchmarkRunner
             CancellationToken = cancellationToken
         };
 
-        // Execute the workload for the requested number of iterations
         await Parallel.ForEachAsync(
             Enumerable.Range(0, config.Iterations),
             parallelOptions,
             async (index, token) =>
             {
-                measurements[index] = await OperationTimer.MeasureAsync(
-                    () => workloadAction(index),
-                    token).ConfigureAwait(false);
+                // Do not start another workload after authentication fails.
+                if (Volatile.Read(ref authenticationFailure) is not null)
+                {
+                    return;
+                }
+
+                token.ThrowIfCancellationRequested();
+
+                var operationStart = Stopwatch.GetTimestamp();
+
+                try
+                {
+                    measurements[index] =
+                        await OperationTimer.MeasureAsync(
+                            () => workloadAction(index),
+                            token).ConfigureAwait(false);
+                }
+                catch (HttpRequestException ex)
+                    when (ex.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    // Publish the failure before processing its measurement.
+                    Interlocked.CompareExchange(
+                        ref authenticationFailure,
+                        ex,
+                        null);
+
+                    var elapsedMs = Stopwatch
+                        .GetElapsedTime(operationStart)
+                        .TotalMilliseconds;
+
+                    measurements[index] = new OperationMeasurement(
+                        false,
+                        elapsedMs,
+                        ex.Message);
+                }
             }).ConfigureAwait(false);
 
-        // Calculate overall execution duration and statistics
         var totalSeconds =
             Stopwatch.GetElapsedTime(overallStart).TotalSeconds;
 
+        // Null slots represent iterations that never started.
+        var executedMeasurements = measurements
+            .OfType<OperationMeasurement>()
+            .ToArray();
+
         var stats = StatisticsCalculator.Calculate(
-            measurements,
+            executedMeasurements,
             totalSeconds);
 
-        return new BenchmarkReport(
+        var report = new BenchmarkReport(
             workloadName,
             config,
             stats,
-            measurements);
+            executedMeasurements);
+
+        if (authenticationFailure is not null)
+        {
+            throw new BenchmarkAuthenticationException(
+                report,
+                authenticationFailure);
+        }
+
+        return report;
     }
 }

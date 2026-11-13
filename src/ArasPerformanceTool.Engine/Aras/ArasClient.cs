@@ -152,10 +152,14 @@ public class ArasClient : IArasClient
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
 
+            
             if (!response.IsSuccessStatusCode)
             {
                 throw new HttpRequestException(
-                    $"AML HTTP request failed with status code {(int)response.StatusCode} ({response.StatusCode}).");
+                    $"AML HTTP request failed with status code " +
+                    $"{(int)response.StatusCode} ({response.StatusCode}).",
+                    inner: null,
+                    statusCode: response.StatusCode);
             }
 
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
