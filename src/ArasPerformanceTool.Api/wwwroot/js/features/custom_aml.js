@@ -13,7 +13,7 @@ export function inspectAml(raw) {
         return {
             valid: false,
             empty: true,
-            message: "Enter a read-only AML query."
+            message: "Enter an AML payload."
         };
     }
 
@@ -41,23 +41,23 @@ export function inspectAml(raw) {
     const items = root.localName === "Item"
         ? [root]
         : Array.from(root.children).filter(
-            el => el.localName === "Item"
+            element => element.localName === "Item"
         );
 
     if (items.length !== 1) {
         return {
             valid: false,
-            message: "Enter exactly one top-level <Item> query."
+            message: "Enter exactly one top-level <Item>."
         };
     }
 
-    const type = items[0].getAttribute("type") || "unknown";
+    const itemType = items[0].getAttribute("type") || "unknown";
     const action = items[0].getAttribute("action") || "unknown";
 
     return {
         valid: true,
         message:
-            `XML parsed: [${action}] on <${type}> ` +
+            `XML parsed: [${action}] on <${itemType}> ` +
             "(server validation required)"
     };
 }
@@ -81,7 +81,9 @@ export function renderAmlQueryResults(queryResult) {
     const count = byId("aml-result-count");
     const xmlPreview = byId("aml-response-xml");
 
-    if (!panel || !content || !count || !xmlPreview) return;
+    if (!panel || !content || !count || !xmlPreview) {
+        return;
+    }
 
     content.replaceChildren();
     count.textContent = "";
@@ -93,20 +95,23 @@ export function renderAmlQueryResults(queryResult) {
     }
 
     const xml = queryResult.responseXml;
+
     const documentXml = new DOMParser().parseFromString(
         xml,
         "application/xml"
     );
 
-    if (documentXml.getElementsByTagName("parsererror").length > 0) {
-        panel.classList.remove("hidden");
-        content.textContent = "Unable to parse the AML response XML.";
-        xmlPreview.textContent = xml;
-        return;
-    }
-
     panel.classList.remove("hidden");
     xmlPreview.textContent = xml;
+
+    if (
+        documentXml.getElementsByTagName("parsererror").length > 0
+    ) {
+        content.textContent =
+            "Unable to parse the AML response XML.";
+
+        return;
+    }
 
     const items = Array.from(
         documentXml.getElementsByTagName("*")
@@ -120,45 +125,58 @@ export function renderAmlQueryResults(queryResult) {
     }
 
     const maxRows = 50;
+    const maxColumns = 14;
     const visibleItems = items.slice(0, maxRows);
 
-    // Collect fields dynamically from returned XML.
+    // Read property values without inserting response XML as HTML.
     const rows = visibleItems.map(item => {
-        const row = {
-            ItemType: item.getAttribute("type") || "Unknown",
-            ID: item.getAttribute("id") || ""
-        };
+        const row = Object.create(null);
+
+        row.ItemType = item.getAttribute("type") || "Unknown";
+        row.ID = item.getAttribute("id") || "";
 
         for (const child of item.children) {
-            if (child.localName === "Relationships") continue;
-
-            // ID is already displayed from the Item attribute.
-            if (child.localName.toLowerCase() === "id") continue;
-
-            // Avoid flattening nested Item elements into text.
-            if (Array.from(child.getElementsByTagName("*"))
-                .some(element => element.localName === "Item")) {
+            if (child.localName === "Relationships") {
                 continue;
             }
 
-            row[child.localName] = child.textContent?.trim() || "";
+            if (child.localName.toLowerCase() === "id") {
+                continue;
+            }
+
+            // Do not flatten nested Items into property text.
+            const containsNestedItem = Array.from(
+                child.getElementsByTagName("*")
+            ).some(element => element.localName === "Item");
+
+            if (containsNestedItem) {
+                continue;
+            }
+
+            row[child.localName] =
+                child.textContent?.trim() || "";
         }
 
         return row;
     });
 
+    const propertyColumns = [
+        ...new Set(
+            rows.flatMap(row =>
+                Object.keys(row).filter(
+                    key => key !== "ItemType" && key !== "ID"
+                )
+            )
+        )
+    ];
+
     const columns = [
         "ItemType",
         "ID",
-        ...new Set(rows.flatMap(row =>
-            Object.keys(row).filter(key =>
-                key !== "ItemType" && key !== "ID"
-            )
-        ))
+        ...propertyColumns
     ];
 
-    // Limit columns to keep the table readable.
-    const visibleColumns = columns.slice(0, 14);
+    const visibleColumns = columns.slice(0, maxColumns);
 
     const wrapper = document.createElement("div");
     wrapper.className = "aml-table-wrapper";
@@ -169,28 +187,33 @@ export function renderAmlQueryResults(queryResult) {
     const thead = document.createElement("thead");
     const headerRow = document.createElement("tr");
 
-    visibleColumns.forEach(column => {
+    for (const column of visibleColumns) {
         const th = document.createElement("th");
+
+        th.scope = "col";
         th.textContent = column;
+
         headerRow.appendChild(th);
-    });
+    }
 
     thead.appendChild(headerRow);
     table.appendChild(thead);
 
     const tbody = document.createElement("tbody");
 
-    rows.forEach(row => {
+    for (const row of rows) {
         const tr = document.createElement("tr");
 
-        visibleColumns.forEach(column => {
+        for (const column of visibleColumns) {
             const td = document.createElement("td");
+
             td.textContent = row[column] ?? "";
+
             tr.appendChild(td);
-        });
+        }
 
         tbody.appendChild(tr);
-    });
+    }
 
     table.appendChild(tbody);
     wrapper.appendChild(table);
@@ -198,22 +221,40 @@ export function renderAmlQueryResults(queryResult) {
 
     if (items.length > maxRows) {
         const notice = document.createElement("p");
+
         notice.className = "aml-result-notice";
         notice.textContent =
-            `Showing the first ${maxRows} of ${items.length} returned Items.`;
+            `Showing the first ${maxRows} of ` +
+            `${items.length} returned Items.`;
+
+        content.appendChild(notice);
+    }
+
+    if (columns.length > maxColumns) {
+        const notice = document.createElement("p");
+
+        notice.className = "aml-result-notice";
+        notice.textContent =
+            `Showing the first ${maxColumns} of ` +
+            `${columns.length} columns. ` +
+            "View the raw XML response for all properties.";
+
         content.appendChild(notice);
     }
 }
 
 export function initCustomAmlFeature() {
     clearAmlBtn?.addEventListener("click", () => {
-        if (!amlPayload) return;
-
         amlPayload.value = "";
-        amlPayload.dispatchEvent(new Event("input", { bubbles: true }));
+
+        amlPayload.dispatchEvent(
+            new Event("input", { bubbles: true })
+        );
+
         amlPayload.focus();
     });
 
     amlPayload.addEventListener("input", updateAmlStatus);
+
     updateAmlStatus();
 }

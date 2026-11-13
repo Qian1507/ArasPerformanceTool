@@ -5,6 +5,7 @@ const loginForm = byId("login-form");
 const arasUsername = byId("arasUsername");
 const arasPassword = byId("arasPassword");
 const arasDatabase = byId("arasDatabase");
+
 const loginSection = byId("login-section");
 const dashboardSection = byId("dashboard-section");
 
@@ -21,7 +22,25 @@ const executeBtn = byId("run-btn");
 const cleanPendingRunBtn = byId("clean-pending-run");
 
 let databasesLoading = false;
+let loggingIn = false;
 let loggingOut = false;
+
+function notifyAuthChanged(authenticated) {
+    document.dispatchEvent(
+        new CustomEvent("aras:auth-changed", {
+            detail: { authenticated }
+        })
+    );
+}
+
+function syncLoginButton() {
+    loginBtn.disabled =
+        databasesLoading ||
+        loggingIn ||
+        loggingOut ||
+        arasDatabase.disabled ||
+        !arasDatabase.value;
+}
 
 function setDatabasePlaceholder(text) {
     const option = document.createElement("option");
@@ -34,7 +53,7 @@ function setDatabasePlaceholder(text) {
 }
 
 export async function loadDatabases() {
-    if (databasesLoading) {
+    if (databasesLoading || loggingIn) {
         return;
     }
 
@@ -43,7 +62,8 @@ export async function loadDatabases() {
     databasesLoading = true;
     arasDatabase.disabled = true;
     reloadDatabasesBtn.disabled = true;
-    loginBtn.disabled = true;
+
+    syncLoginButton();
 
     databaseStatus.classList.remove("login-status-error");
     databaseStatus.textContent = "Loading Aras databases...";
@@ -52,7 +72,9 @@ export async function loadDatabases() {
 
     try {
         await getCsrfToken();
+
         const response = await fetch("/api/auth/databases", {
+            credentials: "same-origin",
             cache: "no-store",
             headers: {
                 "Accept": "application/json"
@@ -99,7 +121,6 @@ export async function loadDatabases() {
 
         arasDatabase.replaceChildren();
 
-        // Multiple databases require an explicit selection.
         if (databases.length > 1) {
             const placeholder = document.createElement("option");
 
@@ -145,10 +166,9 @@ export async function loadDatabases() {
         databaseStatus.classList.add("login-status-error");
     } finally {
         databasesLoading = false;
-        reloadDatabasesBtn.disabled = false;
 
-        // Enable login only when a valid database is selected.
-        loginBtn.disabled = arasDatabase.disabled || !arasDatabase.value;
+        reloadDatabasesBtn.disabled = loggingIn;
+        syncLoginButton();
     }
 }
 
@@ -158,7 +178,12 @@ export function setAuthenticatedUI(authenticated) {
     loginSection.hidden = authenticated;
     dashboardSection.hidden = !authenticated;
 
-    executeBtn.disabled = appState.submitting || appState.requiresLogin;
+    executeBtn.disabled =
+        appState.submitting || appState.requiresLogin;
+
+    if (!authenticated) {
+        cleanPendingRunBtn.disabled = true;
+    }
 }
 
 export function showAuthenticationExpired(revision) {
@@ -169,7 +194,7 @@ export function showAuthenticationExpired(revision) {
 
     appState.requiresLogin = true;
 
-    // Keep existing benchmark results visible.
+    // Keep existing benchmark results and downloads visible.
     loginSection.hidden = false;
     dashboardSection.hidden = false;
 
@@ -182,16 +207,33 @@ export function showAuthenticationExpired(revision) {
 
     executeBtn.disabled = true;
     cleanPendingRunBtn.disabled = true;
+
+    notifyAuthChanged(false);
 }
 
 async function loginToAras(event) {
     event.preventDefault();
 
-    if (databasesLoading || !arasDatabase.value) {
+    if (
+        loggingIn ||
+        loggingOut ||
+        databasesLoading ||
+        arasDatabase.disabled ||
+        !arasDatabase.value
+    ) {
         return;
     }
 
-    loginBtn.disabled = true;
+    const username = arasUsername.value.trim();
+    const password = arasPassword.value;
+    const database = arasDatabase.value;
+
+    loggingIn = true;
+
+    syncLoginButton();
+    reloadDatabasesBtn.disabled = true;
+    logoutBtn.disabled = true;
+
     loginStatus.classList.remove("login-status-error");
     loginStatus.textContent = "Connecting to Aras...";
 
@@ -206,9 +248,9 @@ async function loginToAras(event) {
                 "X-CSRF-TOKEN": csrfToken
             },
             body: JSON.stringify({
-                username: arasUsername.value.trim(),
-                password: arasPassword.value,
-                database: arasDatabase.value
+                username,
+                password,
+                database
             })
         });
 
@@ -230,17 +272,26 @@ async function loginToAras(event) {
         }
 
         if (result?.authenticated !== true) {
-            throw new Error("Login was not confirmed by the server.");
+            throw new Error(
+                "Login was not confirmed by the server."
+            );
         }
 
+        loginStatus.classList.remove("login-status-error");
         loginStatus.textContent =
             `Connected to ${result.database} as ${result.username}.`;
 
         sessionInfo.textContent =
             `${result.username} · ${result.database}`;
 
+        logoutStatus.textContent = "";
+        logoutStatus.classList.remove("login-status-error");
+
+        // Increment before notifying other modules.
         appState.authUiRevision++;
+
         setAuthenticatedUI(true);
+        notifyAuthChanged(true);
     } catch (error) {
         loginStatus.textContent =
             error instanceof Error
@@ -249,21 +300,26 @@ async function loginToAras(event) {
 
         loginStatus.classList.add("login-status-error");
     } finally {
-        // Never keep the password after a login attempt.
         arasPassword.value = "";
 
-        loginBtn.disabled =
-            databasesLoading ||
-            arasDatabase.disabled ||
-            !arasDatabase.value;
+        loggingIn = false;
+        reloadDatabasesBtn.disabled = databasesLoading;
+        logoutBtn.disabled = loggingOut;
+
+        syncLoginButton();
     }
 }
 
 async function logoutFromAras() {
-    if (loggingOut) return;
+    if (loggingOut || loggingIn) {
+        return;
+    }
 
     loggingOut = true;
+
     logoutBtn.disabled = true;
+    syncLoginButton();
+
     logoutStatus.textContent = "Logging out...";
     logoutStatus.classList.remove("login-status-error");
 
@@ -279,17 +335,23 @@ async function logoutFromAras() {
         });
 
         if (!response.ok) {
-            throw new Error(`Logout failed (HTTP ${response.status}).`);
+            throw new Error(
+                `Logout failed (HTTP ${response.status}).`
+            );
         }
 
-        // Clear UI state after the server confirms logout.
         sessionInfo.textContent = "";
+
         loginStatus.textContent = "";
+        loginStatus.classList.remove("login-status-error");
+
         logoutStatus.textContent = "";
         arasPassword.value = "";
 
         appState.authUiRevision++;
+
         setAuthenticatedUI(false);
+        notifyAuthChanged(false);
 
         // Refresh available databases for the next login.
         await loadDatabases();
@@ -303,11 +365,18 @@ async function logoutFromAras() {
     } finally {
         loggingOut = false;
         logoutBtn.disabled = false;
+
+        syncLoginButton();
     }
 }
 
 export async function restoreSession() {
     const revisionAtStart = appState.authUiRevision;
+
+    const isOutdated = () =>
+        revisionAtStart !== appState.authUiRevision ||
+        loggingIn ||
+        loggingOut;
 
     try {
         const response = await fetch("/api/auth/session", {
@@ -315,14 +384,19 @@ export async function restoreSession() {
             cache: "no-store"
         });
 
+        if (isOutdated()) {
+            return;
+        }
+
         if (!response.ok) {
-            throw new Error("Unable to check login session.");
+            throw new Error(
+                "Unable to check login session."
+            );
         }
 
         const session = await response.json();
 
-        // Ignore an outdated response after a newer login/logout.
-        if (revisionAtStart !== appState.authUiRevision) {
+        if (isOutdated()) {
             return;
         }
 
@@ -339,31 +413,52 @@ export async function restoreSession() {
                 "Aras authentication expired. Please sign in again.";
 
             loginStatus.classList.add("login-status-error");
+        } else {
+            loginStatus.textContent = "";
+            loginStatus.classList.remove("login-status-error");
         }
+
+        notifyAuthChanged(authenticated);
     } catch (error) {
-        // An outdated request must not change the current UI.
-        if (revisionAtStart !== appState.authUiRevision) {
+        if (isOutdated()) {
             return;
         }
 
         console.error("Session check failed:", error);
+
+        sessionInfo.textContent = "";
+
         setAuthenticatedUI(false);
+        notifyAuthChanged(false);
     }
 }
 
 export function initLoginFeature() {
-    reloadDatabasesBtn.addEventListener("click", loadDatabases);
-    loginForm.addEventListener("submit", loginToAras);
-    logoutBtn.addEventListener("click", logoutFromAras);
+    reloadDatabasesBtn.addEventListener(
+        "click",
+        loadDatabases
+    );
 
-    arasDatabase.addEventListener("change", () => {
-        loginBtn.disabled =
-            databasesLoading ||
-            arasDatabase.disabled ||
-            !arasDatabase.value;
-    });
+    loginForm.addEventListener(
+        "submit",
+        loginToAras
+    );
 
-    // Database loading and session restoration are independent.
-    loadDatabases();
-    restoreSession();
+    logoutBtn.addEventListener(
+        "click",
+        logoutFromAras
+    );
+
+    arasDatabase.addEventListener(
+        "change",
+        syncLoginButton
+    );
+
+    // Disable protected actions until session restoration completes.
+    setAuthenticatedUI(false);
+    syncLoginButton();
+
+    // These requests have independent purposes.
+    void loadDatabases();
+    void restoreSession();
 }

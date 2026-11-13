@@ -35,3 +35,10 @@ export function verificationText(value, success, failure) {
 
     return "Not verified";
 }
+
+export const BENCHMARK_LIMITS = {
+    minIterations: 1,
+    maxIterations: 1000,
+    minConcurrency: 1,
+    maxConcurrency: 50
+};

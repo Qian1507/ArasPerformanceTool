@@ -5,6 +5,7 @@ const downloadCsvBtn = byId("download-csv-btn");
 
 export function syncReportButtons() {
     const disabled = !appState.currentJobId;
+
     downloadJsonBtn.disabled = disabled;
     downloadCsvBtn.disabled = disabled;
 }
@@ -14,8 +15,9 @@ function downloadReport(format) {
         return;
     }
 
-    window.location.href =
-        `/api/report/${encodeURIComponent(appState.currentJobId)}/${format}`;
+    const jobId = encodeURIComponent(appState.currentJobId);
+
+    window.location.href = `/api/report/${jobId}/${format}`;
 }
 
 export function initReportsFeature() {
@@ -26,4 +28,6 @@ export function initReportsFeature() {
     downloadCsvBtn.addEventListener("click", () => {
         downloadReport("measurements-pdf");
     });
+
+    syncReportButtons();
 }

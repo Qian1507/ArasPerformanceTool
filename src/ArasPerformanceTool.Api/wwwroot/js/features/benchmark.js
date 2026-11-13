@@ -1,17 +1,21 @@
 import {
     appState,
+    BENCHMARK_LIMITS,
     byId,
     numberText,
     displayValue,
     verificationText
 } from "../core/state.js";
+
 import { getCsrfToken } from "../core/api.js";
 import { showAuthenticationExpired } from "./login.js";
+
 import {
     getAmlPayloadValue,
     updateAmlStatus,
     renderAmlQueryResults
 } from "./custom_aml.js";
+
 import { syncReportButtons } from "./reports.js";
 
 const form = byId("benchmark-form");
@@ -43,8 +47,8 @@ const metricP99 = byId("metric-p99");
 const metricMinMax = byId("metric-minmax");
 const metricSuccessRate = byId("metric-success-rate");
 
-const vPanel = byId("verification-panel");
-const vContent = byId("verification-content");
+const verificationPanel = byId("verification-panel");
+const verificationContent = byId("verification-content");
 
 function updateMode() {
     const isRawAml = benchmarkMode.value === "RawAml";
@@ -56,13 +60,20 @@ function updateMode() {
 function updateOperationDescription() {
     const descriptions = {
         Create:
-            "Creates temporary test items and cleans them up after the benchmark.",
+            "Creates temporary test items and cleans them up " +
+            "after the benchmark.",
+
         Read:
-            "Creates one temporary item, reads it repeatedly, and cleans it up.",
+            "Creates one temporary item, reads it repeatedly, " +
+            "and cleans it up.",
+
         Update:
-            "Creates one temporary item per iteration and updates its name. Aras may create a new generation.",
+            "Creates one temporary item per iteration and updates " +
+            "its name. Aras may create a new generation.",
+
         Delete:
-            "Creates one temporary item per iteration, deletes each item, and verifies the results."
+            "Creates one temporary item per iteration, deletes " +
+            "each item, and verifies the results."
     };
 
     if (operationDescription) {
@@ -74,13 +85,37 @@ function updateOperationDescription() {
 function setBusy(busy) {
     appState.submitting = busy;
 
-    executeBtn.disabled = busy || appState.requiresLogin;
+    executeBtn.disabled =
+        busy || appState.requiresLogin;
 
     executeBtnText.textContent = busy
         ? "Running Benchmark..."
         : "Execute Benchmark";
 
     loadingSpinner.classList.toggle("hidden", !busy);
+
+    // Keep the visible configuration aligned with the submitted request.
+    benchmarkMode.disabled = busy;
+    itemType.disabled = busy;
+    operation.disabled = busy;
+    iterations.disabled = busy;
+    concurrency.disabled = busy;
+    workloadName.disabled = busy;
+}
+
+function resetMetrics() {
+    const metricElements = [
+        metricThroughput,
+        metricAvg,
+        metricP95,
+        metricP99,
+        metricMinMax,
+        metricSuccessRate
+    ];
+
+    for (const element of metricElements) {
+        element.textContent = "—";
+    }
 }
 
 export function clearResults() {
@@ -94,41 +129,29 @@ export function clearResults() {
     statusBadge.textContent = "Pending";
     statusBadge.className = "badge";
 
-    const metricElements = [
-        metricThroughput,
-        metricAvg,
-        metricP95,
-        metricP99,
-        metricMinMax,
-        metricSuccessRate
-    ];
-
-    metricElements.forEach(element => {
-        element.textContent = "—";
-    });
+    resetMetrics();
 
     renderVerification(null);
     renderAmlQueryResults(null);
+
     syncReportButtons();
 }
 
-function renderVerification(v) {
-    if (!vPanel || !vContent) {
+function renderVerification(verification) {
+    if (!verificationPanel || !verificationContent) {
         return;
     }
 
-    // Clear the previous benchmark details.
-    vContent.replaceChildren();
+    verificationContent.replaceChildren();
 
-    if (!v) {
-        vPanel.classList.add("hidden");
+    if (!verification) {
+        verificationPanel.classList.add("hidden");
         return;
     }
 
     const grid = document.createElement("div");
     grid.className = "verification-grid";
 
-    // Create elements safely without HTML string injection.
     function addDetail(
         label,
         value,
@@ -159,100 +182,149 @@ function renderVerification(v) {
         grid.appendChild(item);
     }
 
-    switch (v.operation) {
+    switch (verification.operation) {
         case "Create":
-            addDetail("Sample Item ID", v.targetId);
-            addDetail("Sample Name", v.afterValue);
+            addDetail(
+                "Sample Item ID",
+                verification.targetId
+            );
+
+            addDetail(
+                "Sample Name",
+                verification.afterValue
+            );
+
             addDetail(
                 "Verification State",
                 verificationText(
-                    v.isVerified,
+                    verification.isVerified,
                     "Created & Verified",
                     "Verification Failed"
                 ),
-                v.isVerified
+                verification.isVerified
             );
+
             break;
 
         case "Read":
-            addDetail("Target ID Queried", v.targetId);
-            addDetail("Retrieved Value", v.afterValue);
+            addDetail(
+                "Target ID Queried",
+                verification.targetId
+            );
+
+            addDetail(
+                "Retrieved Value",
+                verification.afterValue
+            );
+
             addDetail(
                 "Verification State",
                 verificationText(
-                    v.isVerified,
+                    verification.isVerified,
                     "Record Verified",
                     "Verification Failed"
                 ),
-                v.isVerified
+                verification.isVerified
             );
+
             break;
 
         case "Update":
-            addDetail("Original Item ID", v.targetId);
-            addDetail("Updated Item ID", v.updatedId);
+            addDetail(
+                "Original Item ID",
+                verification.targetId
+            );
+
+            addDetail(
+                "Updated Item ID",
+                verification.updatedId
+            );
+
             addDetail(
                 "Generation Change",
-                `${displayValue(v.beforeGeneration)} → ` +
-                `${displayValue(v.afterGeneration)}`
+                `${displayValue(verification.beforeGeneration)} → ` +
+                `${displayValue(verification.afterGeneration)}`
             );
+
             addDetail(
-                `${displayValue(v.propertyName)} Change`,
-                `${displayValue(v.beforeValue)} → ` +
-                `${displayValue(v.afterValue)}`
+                `${displayValue(verification.propertyName)} Change`,
+                `${displayValue(verification.beforeValue)} → ` +
+                `${displayValue(verification.afterValue)}`
             );
+
             addDetail(
                 "Verification State",
                 verificationText(
-                    v.isVerified,
+                    verification.isVerified,
                     "Value Verified",
                     "Value Mismatch"
                 ),
-                v.isVerified
+                verification.isVerified
             );
+
             break;
 
         case "Delete":
-            addDetail("Sample Deleted Target", v.targetId);
+            addDetail(
+                "Sample Deleted Target",
+                verification.targetId
+            );
+
             addDetail(
                 "Standard ID Query",
                 verificationText(
-                    v.verifiedNotFound,
+                    verification.verifiedNotFound,
                     "No Items Found (Confirmed Absent)",
                     "Deletion Not Confirmed"
                 ),
-                v.verifiedNotFound
+                verification.verifiedNotFound
             );
+
             break;
 
         default:
-            addDetail("Operation", v.operation);
+            addDetail(
+                "Operation",
+                verification.operation
+            );
+
             break;
     }
 
-    // Cleanup is tracked separately from CRUD verification.
     addDetail(
         "Cleanup Status",
         verificationText(
-            v.cleanedUp,
+            verification.cleanedUp,
             "Completed",
             "Failed"
         ),
-        v.cleanedUp
+        verification.cleanedUp
     );
 
-    // Hide redundant audit notes for Create and Read.
-    if (v.verificationNote && ["Update", "Delete"].includes(v.operation)) {
+    if (
+        verification.verificationNote &&
+        ["Update", "Delete"].includes(verification.operation)
+    ) {
         addDetail(
             "Audit Note",
-            v.verificationNote,
+            verification.verificationNote,
             null,
             true
         );
     }
 
-    vContent.appendChild(grid);
-    vPanel.classList.remove("hidden");
+    verificationContent.appendChild(grid);
+    verificationPanel.classList.remove("hidden");
+}
+
+function showError(message) {
+    resultsSection.classList.remove("hidden");
+
+    statusBadge.textContent = "Failed";
+    statusBadge.className = "badge failed";
+
+    errorBanner.textContent = message;
+    errorBanner.classList.remove("hidden");
 }
 
 function renderResults(data, isOk) {
@@ -283,17 +355,17 @@ function renderResults(data, isOk) {
         : "badge failed";
 
     if (!isSuccess) {
-        const errorMsg =
+        errorBanner.textContent =
             data.errorMessage ||
             data.message ||
             data.title ||
             "Benchmark operation failed.";
 
-        errorBanner.textContent = errorMsg;
         errorBanner.classList.remove("hidden");
     }
 
-    // Performance metrics
+    resetMetrics();
+
     const stats = data.statistics;
 
     if (stats) {
@@ -318,34 +390,43 @@ function renderResults(data, isOk) {
             `${displayValue(stats.totalRequests)}`;
     }
 
-    // Dynamic Operation Details
     renderVerification(data.verification);
     renderAmlQueryResults(data.queryResult);
+
     syncReportButtons();
+}
+
+function validateParameters(count, parallel) {
+    return (
+        Number.isInteger(count) &&
+        count >= BENCHMARK_LIMITS.minIterations &&
+        count <= BENCHMARK_LIMITS.maxIterations &&
+        Number.isInteger(parallel) &&
+        parallel >= BENCHMARK_LIMITS.minConcurrency &&
+        parallel <= BENCHMARK_LIMITS.maxConcurrency
+    );
 }
 
 async function handleBenchmarkSubmit(event) {
     event.preventDefault();
 
-    if (appState.submitting) {
+    if (appState.submitting || appState.requiresLogin) {
         return;
     }
 
     const count = Number(iterations.value);
     const parallel = Number(concurrency.value);
 
-    if (
-        !Number.isInteger(count) ||
-        count < 1 ||
-        count > 1000 ||
-        !Number.isInteger(parallel) ||
-        parallel < 1 ||
-        parallel > 50
-    ) {
+    if (!validateParameters(count, parallel)) {
         window.alert(
-            "Iterations must be 1–1000 and " +
-            "Concurrency must be 1–50."
+            "Iterations must be " +
+            `${BENCHMARK_LIMITS.minIterations}–` +
+            `${BENCHMARK_LIMITS.maxIterations} and ` +
+            "Concurrency must be " +
+            `${BENCHMARK_LIMITS.minConcurrency}–` +
+            `${BENCHMARK_LIMITS.maxConcurrency}.`
         );
+
         return;
     }
 
@@ -355,7 +436,6 @@ async function handleBenchmarkSubmit(event) {
         workloadName: workloadName.value.trim() || null
     };
 
-    // Custom AML mode
     if (benchmarkMode.value === "RawAml") {
         const result = updateAmlStatus();
 
@@ -366,17 +446,30 @@ async function handleBenchmarkSubmit(event) {
 
         payload.aml = getAmlPayloadValue();
     } else {
-        // Standard CRUD mode
         payload.itemType = itemType.value;
         payload.action = operation.value;
     }
 
     const authRevisionAtStart = appState.authUiRevision;
+
     clearResults();
     setBusy(true);
 
     try {
         const csrfToken = await getCsrfToken();
+
+        // Do not submit the captured payload under a different login.
+        if (
+            authRevisionAtStart !== appState.authUiRevision ||
+            appState.requiresLogin
+        ) {
+            showError(
+                "Authentication changed before the benchmark was sent. " +
+                "Review the configuration and submit again."
+            );
+
+            return;
+        }
 
         const response = await fetch("/api/benchmark", {
             method: "POST",
@@ -398,32 +491,41 @@ async function handleBenchmarkSubmit(event) {
             );
         }
 
-        if (response.status === 401 && data.requiresLogin === true) {
-            // Keep the JobId so saved partial reports remain downloadable.
+        if (
+            !data ||
+            typeof data !== "object" ||
+            Array.isArray(data)
+        ) {
+            throw new Error(
+                `Invalid server response (HTTP ${response.status}).`
+            );
+        }
+
+        if (
+            response.status === 401 &&
+            data.requiresLogin === true
+        ) {
+            // Preserve the old run's result and available report entry.
             appState.currentJobId = data.jobId || null;
 
             if (appState.currentJobId) {
                 renderResults(data, false);
             } else {
-                resultsSection.classList.remove("hidden");
-
-                statusBadge.textContent = "Failed";
-                statusBadge.className = "badge failed";
-
-                errorBanner.textContent =
+                showError(
                     data.errorMessage ||
                     data.message ||
-                    "Aras authentication expired. Please sign in again.";
+                    "Aras authentication expired. Please sign in again."
+                );
 
-                errorBanner.classList.remove("hidden");
                 syncReportButtons();
             }
 
+            // This helper ignores responses from an older login revision.
             showAuthenticationExpired(authRevisionAtStart);
+
             return;
         }
 
-        // Validation errors generally have no JobId.
         if (!response.ok && !data.jobId) {
             throw new Error(
                 data.message ||
@@ -437,33 +539,47 @@ async function handleBenchmarkSubmit(event) {
 
         renderResults(data, response.ok);
     } catch (error) {
-        resultsSection.classList.remove("hidden");
-
-        statusBadge.textContent = "Failed";
-        statusBadge.className = "badge failed";
-
-        errorBanner.textContent =
+        showError(
             error instanceof Error
                 ? error.message
-                : "Unexpected error.";
-
-        errorBanner.classList.remove("hidden");
+                : "Unexpected error."
+        );
 
         renderVerification(null);
+        renderAmlQueryResults(null);
+        syncReportButtons();
     } finally {
         setBusy(false);
     }
 }
 
 export function initBenchmarkFeature() {
-    form.addEventListener("submit", handleBenchmarkSubmit);
+    iterations.min =
+        String(BENCHMARK_LIMITS.minIterations);
+
+    iterations.max =
+        String(BENCHMARK_LIMITS.maxIterations);
+
+    concurrency.min =
+        String(BENCHMARK_LIMITS.minConcurrency);
+
+    concurrency.max =
+        String(BENCHMARK_LIMITS.maxConcurrency);
+
+    form.addEventListener(
+        "submit",
+        handleBenchmarkSubmit
+    );
 
     benchmarkMode.addEventListener("change", () => {
         updateMode();
         clearResults();
     });
 
-    operation.addEventListener("change", updateOperationDescription);
+    operation.addEventListener(
+        "change",
+        updateOperationDescription
+    );
 
     updateMode();
     updateOperationDescription();
