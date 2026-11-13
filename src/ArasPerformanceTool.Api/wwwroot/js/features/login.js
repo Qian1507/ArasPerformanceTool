@@ -25,13 +25,15 @@ let databasesLoading = false;
 let loggingIn = false;
 let loggingOut = false;
 
-function notifyAuthChanged(authenticated) {
+
+function notifyAuthChanged(authenticated, reason = "session") {
     document.dispatchEvent(
         new CustomEvent("aras:auth-changed", {
-            detail: { authenticated }
+            detail: { authenticated, reason }
         })
     );
 }
+
 
 function syncLoginButton() {
     loginBtn.disabled =
@@ -194,9 +196,10 @@ export function showAuthenticationExpired(revision) {
 
     appState.requiresLogin = true;
 
-    // Keep existing benchmark results and downloads visible.
+    // Keep existing benchmark results in memory,
+    // but show only the login view until re-authenticated.
     loginSection.hidden = false;
-    dashboardSection.hidden = false;
+    dashboardSection.hidden = true;
 
     sessionInfo.textContent = "";
 
@@ -208,7 +211,7 @@ export function showAuthenticationExpired(revision) {
     executeBtn.disabled = true;
     cleanPendingRunBtn.disabled = true;
 
-    notifyAuthChanged(false);
+    notifyAuthChanged(false, "expired");
 }
 
 async function loginToAras(event) {

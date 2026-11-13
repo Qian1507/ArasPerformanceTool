@@ -23,7 +23,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (event.detail?.authenticated === true) {
             void loadPendingCleanupRuns();
-        } else {
+        } else  if (event.detail?.reason !== "expired") {
             clearResults();
         }
     });
