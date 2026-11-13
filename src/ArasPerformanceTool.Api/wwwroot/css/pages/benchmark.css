@@ -1,0 +1,307 @@
+/* Execution Mode */
+#benchmarkMode {
+    font-weight: 500;
+}
+
+#standard-config-group,
+#custom-aml-group {
+    margin-top: 4px;
+}
+
+/* AML Editor */
+.label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+#amlPayload {
+    display: block;
+    height: auto;
+    min-height: 190px;
+    resize: vertical;
+    padding: 14px;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    background: #1e1e1e;
+    color: #e2e8f0;
+    font-family: Consolas, Monaco, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    tab-size: 4;
+}
+
+#amlPayload:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(52, 120, 212, 0.16);
+}
+
+#amlPayload::placeholder {
+    color: #94a3b8;
+}
+
+/* AML Parse Status */
+.parse-status {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.parse-status.parse-ok {
+    color: var(--success);
+}
+
+.parse-status.parse-error {
+    color: var(--danger);
+}
+
+/* Results */
+.results-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.results-header h2 {
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+/* Performance Metrics */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.metric-box {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    min-width: 0;
+    min-height: 116px;
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: #f8fafc;
+}
+
+.metric-label {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.metric-value {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    font-size: 23px;
+    line-height: 1.3;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.metric-unit {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+/* Report Export */
+.export-actions {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+}
+
+.export-actions h3 {
+    margin: 0 0 12px;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+/* CRUD Operation Verification */
+.verification-panel {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 18px;
+    margin-bottom: 20px;
+}
+
+.verification-panel h3 {
+    margin: 0 0 14px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.verification-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+    gap: 14px;
+}
+
+.v-item {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 4px;
+}
+
+.v-item-full {
+    grid-column: 1 / -1;
+    margin-top: 6px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+}
+
+.v-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.v-val {
+    font-family: Consolas, Monaco, "Courier New", monospace;
+    font-size: 13px;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+.v-status-ok {
+    color: var(--success);
+    font-weight: 600;
+}
+
+.v-status-fail {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.text-muted {
+    color: var(--text-secondary);
+    font-style: italic;
+    font-family: inherit;
+}
+
+/* Custom AML Query Result Details */
+.aml-result-panel {
+    margin-top: 24px;
+    padding: 24px;
+    background: var(--surface);
+    border: 1px solid #dfe3e8;
+    border-radius: 12px;
+}
+
+.aml-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.aml-result-header h3 {
+    margin: 0;
+}
+
+#aml-result-count {
+    font-size: 13px;
+    color: #64748b;
+}
+
+.aml-table-wrapper {
+    overflow-x: auto;
+    max-height: 440px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+}
+
+.aml-result-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.aml-result-table th,
+.aml-result-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.aml-result-table th {
+    background: #f8fafc;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+
+.aml-result-notice {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 12px;
+}
+
+.aml-xml-details {
+    margin-top: 20px;
+}
+
+.aml-xml-details summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+#aml-response-xml {
+    margin-top: 12px;
+    padding: 16px;
+    max-height: 400px;
+    overflow: auto;
+    background: #f1f5f9;
+    border-radius: 8px;
+    font-size: 12px;
+    white-space: pre;
+}
+
+@media (max-width: 720px) {
+    .metrics-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 480px) {
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .results-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .action-buttons {
+        flex-direction: column;
+    }
+
+    .action-buttons .btn {
+        width: 100%;
+    }
+
+    .metric-value {
+        font-size: 21px;
+    }
+}

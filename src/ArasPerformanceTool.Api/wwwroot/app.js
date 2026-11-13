@@ -655,6 +655,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         renderVerification(null);
+        renderAmlQueryResults(null);
 
         downloadJsonBtn.disabled = true;
         downloadCsvBtn.disabled = true;
@@ -1584,7 +1585,10 @@ function renderAmlQueryResults(queryResult) {
     // 10. Event Listeners and Initialization
     // =====================================================
 
-    benchmarkMode.addEventListener("change", updateMode);
+    benchmarkMode.addEventListener("change", () => {
+            updateMode();
+            clearResults();
+        });
 
     operation.addEventListener(
         "change",

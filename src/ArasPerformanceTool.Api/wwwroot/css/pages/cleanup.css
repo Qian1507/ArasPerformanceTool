@@ -1,0 +1,59 @@
+/* =========================================================
+   Pending Test Data Cleanup Module
+   ========================================================= */
+
+#pending-cleanup-section .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #edf2f7;
+}
+
+#pending-cleanup-section .section-header h2 {
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+#pending-cleanup-preview {
+    margin-top: 18px;
+    padding: 18px;
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+#pending-cleanup-preview h3 {
+    margin: 0 0 10px;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+#clean-pending-run.secondary-btn {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 38px;
+    padding: 8px 16px;
+    margin-top: 12px;
+    border: 1px solid var(--danger);
+    border-radius: 5px;
+    background: #ffffff;
+    color: var(--danger);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+#clean-pending-run.secondary-btn:hover:not(:disabled) {
+    background: #fef2f2;
+}
+
+#clean-pending-run.secondary-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

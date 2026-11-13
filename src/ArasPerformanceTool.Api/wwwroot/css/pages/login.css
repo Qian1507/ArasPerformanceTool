@@ -1,0 +1,165 @@
+/* =========================================================
+   Aras Login Module
+   ========================================================= */
+
+.login-card {
+    width: 100%;
+    max-width: 440px;
+    margin: 32px auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #ffffff;
+    box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.04),
+                0 8px 10px -6px rgba(15, 23, 42, 0.02);
+}
+
+.login-card h2 {
+    margin: 0 0 22px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 19px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+/* Icon Wrap */
+.input-with-icon,
+.select-with-icon {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+}
+
+.input-with-icon .field-icon,
+.select-with-icon .field-icon {
+    position: absolute;
+    left: 12px;
+    width: 16px;
+    height: 16px;
+    color: #94a3b8;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.input-with-icon input,
+.select-with-icon select {
+    padding-left: 36px;
+    height: 42px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 13.5px;
+}
+
+.select-with-icon {
+    flex: 1;
+}
+
+/* Database Row */
+.database-select-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Reload Button with Icon */
+.btn-reload {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 42px;
+    padding: 0 14px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-reload .reload-icon {
+    width: 14px;
+    height: 14px;
+    color: #475569;
+}
+
+.btn-reload:hover:not(:disabled) {
+    background: #f8fafc;
+    border-color: #94a3b8;
+    color: #0f172a;
+}
+
+.btn-reload:hover:not(:disabled) .reload-icon {
+    color: #0f172a;
+}
+
+.btn-reload:disabled {
+    opacity: 0.55;
+    background: #f1f5f9;
+    color: #94a3b8;
+    cursor: not-allowed;
+}
+
+/* Status Indicator Dot */
+.login-status {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    margin-bottom: 0;
+    font-size: 12px;
+    color: #64748b;
+    min-height: 18px;
+}
+
+.login-status:not(:empty) {
+    display: inline-flex;
+}
+
+.login-status:not(:empty)::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: #10b981;
+    flex-shrink: 0;
+}
+
+.login-status.login-status-error {
+    color: #b91c1c;
+}
+
+.login-status.login-status-error:not(:empty)::before {
+    background-color: #ef4444;
+}
+
+/* Submit Button */
+.login-card .btn-primary {
+    height: 42px;
+    margin-top: 6px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    background: #2563eb;
+    box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+}
+
+.login-card .btn-primary:hover:not(:disabled) {
+    background: #1d4ed8;
+}
+
+@media (max-width: 600px) {
+    .database-select-row {
+        flex-direction: column;
+    }
+
+    .database-select-row #reload-databases-btn {
+        width: 100%;
+    }
+}
