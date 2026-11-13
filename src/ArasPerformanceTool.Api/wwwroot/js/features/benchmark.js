@@ -1,0 +1,471 @@
+import {
+    appState,
+    byId,
+    numberText,
+    displayValue,
+    verificationText
+} from "../core/state.js";
+import { getCsrfToken } from "../core/api.js";
+import { showAuthenticationExpired } from "./login.js";
+import {
+    getAmlPayloadValue,
+    updateAmlStatus,
+    renderAmlQueryResults
+} from "./custom_aml.js";
+import { syncReportButtons } from "./reports.js";
+
+const form = byId("benchmark-form");
+const benchmarkMode = byId("benchmarkMode");
+
+const standardGroup = byId("standard-config-group");
+const customGroup = byId("custom-aml-group");
+
+const itemType = byId("itemType");
+const operation = byId("operation");
+const operationDescription = byId("operation-description");
+
+const iterations = byId("iterations");
+const concurrency = byId("concurrency");
+const workloadName = byId("workloadName");
+
+const executeBtn = byId("run-btn");
+const executeBtnText = byId("btn-text");
+const loadingSpinner = byId("btn-spinner");
+
+const resultsSection = byId("results-section");
+const statusBadge = byId("status-badge");
+const errorBanner = byId("error-banner");
+
+const metricThroughput = byId("metric-throughput");
+const metricAvg = byId("metric-avg");
+const metricP95 = byId("metric-p95");
+const metricP99 = byId("metric-p99");
+const metricMinMax = byId("metric-minmax");
+const metricSuccessRate = byId("metric-success-rate");
+
+const vPanel = byId("verification-panel");
+const vContent = byId("verification-content");
+
+function updateMode() {
+    const isRawAml = benchmarkMode.value === "RawAml";
+
+    standardGroup.classList.toggle("hidden", isRawAml);
+    customGroup.classList.toggle("hidden", !isRawAml);
+}
+
+function updateOperationDescription() {
+    const descriptions = {
+        Create:
+            "Creates temporary test items and cleans them up after the benchmark.",
+        Read:
+            "Creates one temporary item, reads it repeatedly, and cleans it up.",
+        Update:
+            "Creates one temporary item per iteration and updates its name. Aras may create a new generation.",
+        Delete:
+            "Creates one temporary item per iteration, deletes each item, and verifies the results."
+    };
+
+    if (operationDescription) {
+        operationDescription.textContent =
+            descriptions[operation.value] || "";
+    }
+}
+
+function setBusy(busy) {
+    appState.submitting = busy;
+
+    executeBtn.disabled = busy || appState.requiresLogin;
+
+    executeBtnText.textContent = busy
+        ? "Running Benchmark..."
+        : "Execute Benchmark";
+
+    loadingSpinner.classList.toggle("hidden", !busy);
+}
+
+export function clearResults() {
+    appState.currentJobId = null;
+
+    resultsSection.classList.add("hidden");
+
+    errorBanner.classList.add("hidden");
+    errorBanner.textContent = "";
+
+    statusBadge.textContent = "Pending";
+    statusBadge.className = "badge";
+
+    const metricElements = [
+        metricThroughput,
+        metricAvg,
+        metricP95,
+        metricP99,
+        metricMinMax,
+        metricSuccessRate
+    ];
+
+    metricElements.forEach(element => {
+        element.textContent = "—";
+    });
+
+    renderVerification(null);
+    renderAmlQueryResults(null);
+    syncReportButtons();
+}
+
+function renderVerification(v) {
+    if (!vPanel || !vContent) {
+        return;
+    }
+
+    // Clear the previous benchmark details.
+    vContent.replaceChildren();
+
+    if (!v) {
+        vPanel.classList.add("hidden");
+        return;
+    }
+
+    const grid = document.createElement("div");
+    grid.className = "verification-grid";
+
+    // Create elements safely without HTML string injection.
+    function addDetail(
+        label,
+        value,
+        verificationState = null,
+        fullWidth = false
+    ) {
+        const item = document.createElement("div");
+
+        item.className = fullWidth
+            ? "v-item v-item-full"
+            : "v-item";
+
+        const labelElement = document.createElement("span");
+        labelElement.className = "v-label";
+        labelElement.textContent = label;
+
+        const valueElement = document.createElement("span");
+        valueElement.className = "v-val";
+        valueElement.textContent = displayValue(value);
+
+        if (verificationState === true) {
+            valueElement.classList.add("v-status-ok");
+        } else if (verificationState === false) {
+            valueElement.classList.add("v-status-fail");
+        }
+
+        item.append(labelElement, valueElement);
+        grid.appendChild(item);
+    }
+
+    switch (v.operation) {
+        case "Create":
+            addDetail("Sample Item ID", v.targetId);
+            addDetail("Sample Name", v.afterValue);
+            addDetail(
+                "Verification State",
+                verificationText(
+                    v.isVerified,
+                    "Created & Verified",
+                    "Verification Failed"
+                ),
+                v.isVerified
+            );
+            break;
+
+        case "Read":
+            addDetail("Target ID Queried", v.targetId);
+            addDetail("Retrieved Value", v.afterValue);
+            addDetail(
+                "Verification State",
+                verificationText(
+                    v.isVerified,
+                    "Record Verified",
+                    "Verification Failed"
+                ),
+                v.isVerified
+            );
+            break;
+
+        case "Update":
+            addDetail("Original Item ID", v.targetId);
+            addDetail("Updated Item ID", v.updatedId);
+            addDetail(
+                "Generation Change",
+                `${displayValue(v.beforeGeneration)} → ` +
+                `${displayValue(v.afterGeneration)}`
+            );
+            addDetail(
+                `${displayValue(v.propertyName)} Change`,
+                `${displayValue(v.beforeValue)} → ` +
+                `${displayValue(v.afterValue)}`
+            );
+            addDetail(
+                "Verification State",
+                verificationText(
+                    v.isVerified,
+                    "Value Verified",
+                    "Value Mismatch"
+                ),
+                v.isVerified
+            );
+            break;
+
+        case "Delete":
+            addDetail("Sample Deleted Target", v.targetId);
+            addDetail(
+                "Standard ID Query",
+                verificationText(
+                    v.verifiedNotFound,
+                    "No Items Found (Confirmed Absent)",
+                    "Deletion Not Confirmed"
+                ),
+                v.verifiedNotFound
+            );
+            break;
+
+        default:
+            addDetail("Operation", v.operation);
+            break;
+    }
+
+    // Cleanup is tracked separately from CRUD verification.
+    addDetail(
+        "Cleanup Status",
+        verificationText(
+            v.cleanedUp,
+            "Completed",
+            "Failed"
+        ),
+        v.cleanedUp
+    );
+
+    // Hide redundant audit notes for Create and Read.
+    if (v.verificationNote && ["Update", "Delete"].includes(v.operation)) {
+        addDetail(
+            "Audit Note",
+            v.verificationNote,
+            null,
+            true
+        );
+    }
+
+    vContent.appendChild(grid);
+    vPanel.classList.remove("hidden");
+}
+
+function renderResults(data, isOk) {
+    resultsSection.classList.remove("hidden");
+
+    errorBanner.classList.add("hidden");
+    errorBanner.textContent = "";
+
+    const statusNames = [
+        "Pending",
+        "Running",
+        "Completed",
+        "Failed"
+    ];
+
+    const status = typeof data.status === "number"
+        ? statusNames[data.status] ?? "Unknown"
+        : data.status ?? "Unknown";
+
+    const isSuccess =
+        isOk &&
+        String(status).toLowerCase() === "completed";
+
+    statusBadge.textContent = status;
+
+    statusBadge.className = isSuccess
+        ? "badge"
+        : "badge failed";
+
+    if (!isSuccess) {
+        const errorMsg =
+            data.errorMessage ||
+            data.message ||
+            data.title ||
+            "Benchmark operation failed.";
+
+        errorBanner.textContent = errorMsg;
+        errorBanner.classList.remove("hidden");
+    }
+
+    // Performance metrics
+    const stats = data.statistics;
+
+    if (stats) {
+        metricThroughput.textContent =
+            numberText(stats.throughputRequestsPerSecond, 2);
+
+        metricAvg.textContent =
+            numberText(stats.averageMs, 2);
+
+        metricP95.textContent =
+            numberText(stats.p95Ms, 2);
+
+        metricP99.textContent =
+            numberText(stats.p99Ms, 2);
+
+        metricMinMax.textContent =
+            `${numberText(stats.minMs, 1)} / ` +
+            `${numberText(stats.maxMs, 1)}`;
+
+        metricSuccessRate.textContent =
+            `${displayValue(stats.successCount)} / ` +
+            `${displayValue(stats.totalRequests)}`;
+    }
+
+    // Dynamic Operation Details
+    renderVerification(data.verification);
+    renderAmlQueryResults(data.queryResult);
+    syncReportButtons();
+}
+
+async function handleBenchmarkSubmit(event) {
+    event.preventDefault();
+
+    if (appState.submitting) {
+        return;
+    }
+
+    const count = Number(iterations.value);
+    const parallel = Number(concurrency.value);
+
+    if (
+        !Number.isInteger(count) ||
+        count < 1 ||
+        count > 1000 ||
+        !Number.isInteger(parallel) ||
+        parallel < 1 ||
+        parallel > 50
+    ) {
+        window.alert(
+            "Iterations must be 1–1000 and " +
+            "Concurrency must be 1–50."
+        );
+        return;
+    }
+
+    const payload = {
+        iterations: count,
+        concurrency: parallel,
+        workloadName: workloadName.value.trim() || null
+    };
+
+    // Custom AML mode
+    if (benchmarkMode.value === "RawAml") {
+        const result = updateAmlStatus();
+
+        if (!result.valid) {
+            window.alert(result.message);
+            return;
+        }
+
+        payload.aml = getAmlPayloadValue();
+    } else {
+        // Standard CRUD mode
+        payload.itemType = itemType.value;
+        payload.action = operation.value;
+    }
+
+    const authRevisionAtStart = appState.authUiRevision;
+    clearResults();
+    setBusy(true);
+
+    try {
+        const csrfToken = await getCsrfToken();
+
+        const response = await fetch("/api/benchmark", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-TOKEN": csrfToken
+            },
+            body: JSON.stringify(payload)
+        });
+
+        let data;
+
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error(
+                `Invalid server response (HTTP ${response.status}).`
+            );
+        }
+
+        if (response.status === 401 && data.requiresLogin === true) {
+            // Keep the JobId so saved partial reports remain downloadable.
+            appState.currentJobId = data.jobId || null;
+
+            if (appState.currentJobId) {
+                renderResults(data, false);
+            } else {
+                resultsSection.classList.remove("hidden");
+
+                statusBadge.textContent = "Failed";
+                statusBadge.className = "badge failed";
+
+                errorBanner.textContent =
+                    data.errorMessage ||
+                    data.message ||
+                    "Aras authentication expired. Please sign in again.";
+
+                errorBanner.classList.remove("hidden");
+                syncReportButtons();
+            }
+
+            showAuthenticationExpired(authRevisionAtStart);
+            return;
+        }
+
+        // Validation errors generally have no JobId.
+        if (!response.ok && !data.jobId) {
+            throw new Error(
+                data.message ||
+                data.title ||
+                data.errorMessage ||
+                `Benchmark request failed (HTTP ${response.status}).`
+            );
+        }
+
+        appState.currentJobId = data.jobId || null;
+
+        renderResults(data, response.ok);
+    } catch (error) {
+        resultsSection.classList.remove("hidden");
+
+        statusBadge.textContent = "Failed";
+        statusBadge.className = "badge failed";
+
+        errorBanner.textContent =
+            error instanceof Error
+                ? error.message
+                : "Unexpected error.";
+
+        errorBanner.classList.remove("hidden");
+
+        renderVerification(null);
+    } finally {
+        setBusy(false);
+    }
+}
+
+export function initBenchmarkFeature() {
+    form.addEventListener("submit", handleBenchmarkSubmit);
+
+    benchmarkMode.addEventListener("change", () => {
+        updateMode();
+        clearResults();
+    });
+
+    operation.addEventListener("change", updateOperationDescription);
+
+    updateMode();
+    updateOperationDescription();
+    clearResults();
+}
