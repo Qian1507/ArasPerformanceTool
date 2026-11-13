@@ -84,10 +84,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // Authentication
     let databasesLoading = false;
     let loggingOut = false;
+
     // Benchmark execution
     let currentJobId = null;
     let submitting = false;
-    
+
+    let authUiRevision = 0;
+    let requiresLogin = true;
+
     // Pending cleanup
     let pendingCleanupLoading = false;
     let pendingCleanupRunning = false;
@@ -249,9 +253,36 @@ document.addEventListener("DOMContentLoaded", () => {
     // =====================================================
 
     // Show only the appropriate section for the login state.
-    function setAuthenticatedUI(authenticated) {
+   function setAuthenticatedUI(authenticated) {
+        requiresLogin = !authenticated;
+
         loginSection.hidden = authenticated;
         dashboardSection.hidden = !authenticated;
+
+        executeBtn.disabled = submitting || requiresLogin;
+    }
+
+    function showAuthenticationExpired(revision) {
+        // An old request must not override a newer login/logout.
+        if (revision !== authUiRevision) {
+            return;
+        }
+
+        requiresLogin = true;
+
+        // Keep existing benchmark results visible.
+        loginSection.hidden = false;
+        dashboardSection.hidden = false;
+
+        sessionInfo.textContent = "";
+
+        loginStatus.textContent =
+            "Aras authentication expired. Please sign in again.";
+
+        loginStatus.classList.add("login-status-error");
+
+        executeBtn.disabled = true;
+        cleanPendingRunBtn.disabled = true;
     }
 
     async function getCsrfToken() {
@@ -328,6 +359,7 @@ document.addEventListener("DOMContentLoaded", () => {
             sessionInfo.textContent =
                 `${result.username} · ${result.database}`;
 
+            authUiRevision++;
             setAuthenticatedUI(true);
 
             // Dashboard switching will be implemented later.
@@ -382,6 +414,7 @@ document.addEventListener("DOMContentLoaded", () => {
             logoutStatus.textContent = "";
             arasPassword.value = "";
 
+            authUiRevision++;
             setAuthenticatedUI(false);
 
             // Refresh available databases for the next login.
@@ -399,6 +432,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
     async function restoreSession() {
+        const revisionAtStart = authUiRevision;
     try {
         const response = await fetch("/api/auth/session", {
             credentials: "same-origin",
@@ -410,6 +444,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const session = await response.json();
+
+        // Ignore an outdated response after a newer login/logout
+        if (revisionAtStart !== authUiRevision) {
+            return;
+        }
         const authenticated = session.authenticated === true;
 
         sessionInfo.textContent = authenticated
@@ -417,8 +456,18 @@ document.addEventListener("DOMContentLoaded", () => {
             : "";
 
         setAuthenticatedUI(authenticated);
+        if (!authenticated && session.requiresLogin === true) {
+            loginStatus.textContent =
+                "Aras authentication expired. Please sign in again.";
+
+            loginStatus.classList.add("login-status-error");
+        }
 
     } catch (error) {
+        // An outdated request must not change the current UI.
+        if (revisionAtStart !== authUiRevision) {
+            return;
+        }
         console.error("Session check failed:", error);
         setAuthenticatedUI(false);
     }
@@ -545,7 +594,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function setBusy(busy) {
         submitting = busy;
 
-        executeBtn.disabled = busy;
+        executeBtn.disabled = busy || requiresLogin;
 
         executeBtnText.textContent = busy
             ? "Running Benchmark..."
@@ -1064,6 +1113,7 @@ function renderAmlQueryResults(queryResult) {
             payload.action = operation.value;
         }
 
+        const authRevisionAtStart = authUiRevision;
        clearResults();
         setBusy(true);
 
@@ -1089,6 +1139,34 @@ function renderAmlQueryResults(queryResult) {
                 throw new Error(
                     `Invalid server response (HTTP ${response.status}).`
                 );
+            }
+
+
+            if (response.status === 401 && data.requiresLogin === true) {
+                // Keep the JobId so saved partial reports remain downloadable.
+                currentJobId = data.jobId || null;
+
+                if (currentJobId) {
+                    renderResults(data, false);
+                } else {
+                    resultsSection.classList.remove("hidden");
+
+                    statusBadge.textContent = "Failed";
+                    statusBadge.className = "badge failed";
+
+                    errorBanner.textContent =
+                        data.errorMessage ||
+                        data.message ||
+                        "Aras authentication expired. Please sign in again.";
+
+                    errorBanner.classList.remove("hidden");
+
+                    downloadJsonBtn.disabled = true;
+                    downloadCsvBtn.disabled = true;
+                }
+
+                showAuthenticationExpired(authRevisionAtStart);
+                return;
             }
 
             // Validation errors generally have no JobId.
@@ -1263,6 +1341,7 @@ function renderAmlQueryResults(queryResult) {
     }
 
     const runId = selectedCleanupRunId;
+    const authRevisionAtStart = authUiRevision;
 
     const confirmed = window.confirm(
         `Clean test data for Run ${runId}?\n\n` +
@@ -1299,6 +1378,15 @@ function renderAmlQueryResults(queryResult) {
 
         const data = await response.json();
 
+        if (response.status === 401 && data?.requiresLogin === true) {
+            showAuthenticationExpired(authRevisionAtStart);
+
+            pendingCleanupResult.textContent =
+                "Authentication expired during cleanup. " +
+                "Sign in again, then review the pending Run.";
+
+            return;
+        }
         if (!response.ok) {
             throw new Error(
                 data?.message ||
@@ -1332,7 +1420,9 @@ function renderAmlQueryResults(queryResult) {
         pendingCleanupRunning = false;
         refreshPendingCleanupBtn.disabled = false;
 
-        await loadPendingCleanupRuns();
+        if (!requiresLogin) {
+            await loadPendingCleanupRuns();
+        }
     }
 }
 

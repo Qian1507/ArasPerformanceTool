@@ -83,4 +83,5 @@ public sealed record BenchmarkStatusResponse(
     string? ErrorMessage,
     CrudVerification? Verification = null,
     AmlQueryResult? QueryResult = null,
-    CustomAmlCrudResult? ManagedCrudResult = null);
+    CustomAmlCrudResult? ManagedCrudResult = null,
+            bool RequiresLogin = false);

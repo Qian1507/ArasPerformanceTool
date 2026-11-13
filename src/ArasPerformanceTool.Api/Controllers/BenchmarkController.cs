@@ -12,6 +12,8 @@ using ArasPerformanceTool.Engine.Services;
 using ArasPerformanceTool.Engine.Models;
 using Microsoft.AspNetCore.Hosting;
 using ArasPerformanceTool.Api.Services;
+using System.Net;
+using ArasPerformanceTool.Engine.Exceptions;
 
 namespace ArasPerformanceTool.Api.Controllers;
 
@@ -33,6 +35,7 @@ public class BenchmarkController : ControllerBase
     private readonly RunExecutionCoordinator _runExecutionCoordinator;
 
     private readonly TestDataCleanupService _cleanupService;
+    private readonly ExpiredArasTokenStore _expiredArasTokens;
 
    public BenchmarkController(
     IArasClient arasClient,
@@ -42,7 +45,8 @@ public class BenchmarkController : ControllerBase
     CustomAmlBenchmarkService customAmlBenchmarkService,
     IWebHostEnvironment environment,
     RunExecutionCoordinator runExecutionCoordinator,
-    TestDataCleanupService cleanupService)
+    TestDataCleanupService cleanupService,
+    ExpiredArasTokenStore expiredArasTokens)
 {
     _arasClient = arasClient;
     _fileResultStore = fileResultStore;
@@ -52,6 +56,7 @@ public class BenchmarkController : ControllerBase
     _environment = environment;
     _runExecutionCoordinator = runExecutionCoordinator;
     _cleanupService = cleanupService;
+    _expiredArasTokens = expiredArasTokens;
 }
     /// <summary>
     /// Runs a standard CRUD or custom read-only AML benchmark.
@@ -241,7 +246,14 @@ public async Task<IActionResult> StartBenchmark(
                     "Please sign in to Aras before running a benchmark."
             });
         }
-
+        if (_expiredArasTokens.IsExpired(token))
+        {
+            return Unauthorized(new
+            {
+                message = "Aras authentication has expired. Please sign in again.",
+                requiresLogin = true
+            });
+        }
         // =====================================================
         // 3. Initialize Benchmark
         // =====================================================
@@ -268,6 +280,7 @@ public async Task<IActionResult> StartBenchmark(
 
         var status = BenchmarkStatus.Completed;
         string? errorMessage = null;
+        bool requiresLogin = false;
 
         try
         {        
@@ -392,7 +405,7 @@ public async Task<IActionResult> StartBenchmark(
 
                 var deleteWorkload =
                     new DeleteWorkload(_arasClient);
-
+                bool benchmarkAuthenticationFailed = false;
                 try
                 {
                     // =========================================
@@ -847,6 +860,25 @@ public async Task<IActionResult> StartBenchmark(
                             CleanedUp: null);
                     }
                 }
+                catch (BenchmarkAuthenticationException ex)
+                {
+                    // Preserve measurements collected before authentication failed.
+                    report = ex.PartialReport;
+                    
+                    // Do not reuse the expired token for automatic cleanup.
+                    benchmarkAuthenticationFailed = true;
+                     
+                    throw;
+                }
+                catch (HttpRequestException ex)
+                    when (ex.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    // Also handles 401 during preparation or CRUD verification,
+                    // which happens outside BenchmarkRunner.
+                    benchmarkAuthenticationFailed = true;
+                    
+                    throw;
+                }
                 finally
                 {
                     // =========================================
@@ -856,30 +888,33 @@ public async Task<IActionResult> StartBenchmark(
                     // Cleanup is excluded from benchmark timing.
                     // Failed and already-deleted records remain
                     // subject to the manager's verification rules.
-                    var cleanupResult =
-                        await dataManager.CleanupAsync(
-                            serverUrl,
-                            token,
-                            itemType,
-                            expectedEnvironmentId: environmentId);
+                     if (!benchmarkAuthenticationFailed)
+                     {
+                        var cleanupResult =
+                            await dataManager.CleanupAsync(
+                                serverUrl,
+                                token,
+                                itemType,
+                                expectedEnvironmentId: environmentId);
 
-                    var cleanupSucceeded =
-                        cleanupResult.FailedIds.Count == 0 &&
-                        dataManager.Manifest.TotalCount == 0;
+                        var cleanupSucceeded =
+                            cleanupResult.FailedIds.Count == 0 &&
+                            dataManager.Manifest.TotalCount == 0;
 
-                    if (verification is not null)
-                    {
-                        verification = verification with
+                        if (verification is not null)
                         {
-                            CleanedUp = cleanupSucceeded
-                        };
-                    }
+                            verification = verification with
+                            {
+                                CleanedUp = cleanupSucceeded
+                            };
+                        }
 
-                    if (!cleanupSucceeded)
-                    {
-                        throw new InvalidOperationException(
-                            "Benchmark cleanup did not complete successfully.");
-                    }
+                        if (!cleanupSucceeded)
+                        {
+                            throw new InvalidOperationException(
+                                "Benchmark cleanup did not complete successfully.");
+                        }
+                     }
                 }
             }
 
@@ -954,6 +989,57 @@ public async Task<IActionResult> StartBenchmark(
                 jobId,
                 report);
             }
+
+            catch (HttpRequestException ex)
+                when (ex.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                _expiredArasTokens.MarkExpired(token);
+                _logger.LogWarning(
+                    ex,
+                    "Aras authentication expired during benchmark. JobId={JobId}",
+                    jobId);
+
+                requiresLogin = true;
+                status = BenchmarkStatus.Failed;
+
+                errorMessage =
+                    "Aras authentication has expired. " +
+                    "Please sign in again. " +
+                    "Any remaining test data can be cleaned up after login.";
+
+                // BenchmarkRunner or CustomAmlBenchmarkService may have
+                // returned the completed measurements in the exception.
+                if (ex is BenchmarkAuthenticationException authException)
+                {
+                    report = authException.PartialReport;
+                }
+
+                if (report is not null)
+                {
+                    var reportOperation = action.ToLowerInvariant() switch
+                    {
+                        "add" or "create" => "Create",
+                        "get" or "read" => "Read",
+                        "edit" or "update" => "Update",
+                        "delete" => "Delete",
+                        _ => action
+                    };
+
+                    report = report with
+                    {
+                        RunId = jobId.ToString("N"),
+                        Mode = isRawAml ? "CustomAml" : "Standard",
+                        Operation = reportOperation
+                    };
+
+                    statistics = report.Statistics;
+
+                    // Persist the available results even when authentication
+                    // expired during benchmark or automatic cleanup.
+                    await _fileResultStore.SaveAsync(jobId, report);
+                }
+            }
+
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -986,7 +1072,8 @@ public async Task<IActionResult> StartBenchmark(
             Statistics: statistics,
             ErrorMessage: errorMessage,
             Verification: verification,
-            QueryResult: queryResult);
+            QueryResult: queryResult,
+            RequiresLogin: requiresLogin);
 
         Jobs[jobId] = response;
 
@@ -995,7 +1082,13 @@ public async Task<IActionResult> StartBenchmark(
             jobId,
             status);
 
-        if (status == BenchmarkStatus.Failed)
+        if (requiresLogin)
+        {
+            return StatusCode(
+                StatusCodes.Status401Unauthorized,
+                response);
+        }
+                if (status == BenchmarkStatus.Failed)
         {
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
@@ -1269,6 +1362,14 @@ public async Task<IActionResult> GetPendingCleanupRun(Guid runId)
                 message = "Please sign in to Aras before running cleanup."
             });
         }
+        if (_expiredArasTokens.IsExpired(token))
+        {
+            return Unauthorized(new
+            {
+                message = "Aras authentication has expired. Please sign in again.",
+                requiresLogin = true
+            });
+        }
 
         if (!_runExecutionCoordinator.TryAcquire(runId))
         {
@@ -1417,6 +1518,24 @@ public async Task<IActionResult> GetPendingCleanupRun(Guid runId)
                 Message = "Unable to complete manual cleanup."
             });
         }
+
+        catch (HttpRequestException ex)
+            when (ex.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            _expiredArasTokens.MarkExpired(token);
+            _logger.LogWarning(
+                ex,
+                "Aras authentication expired during manual cleanup. RunId={RunId}",
+                runId);
+
+            return Unauthorized(new
+            {
+                message = "Aras authentication has expired. Please sign in again.",
+                requiresLogin = true,
+                runId
+            });
+        }
+
         catch (HttpRequestException ex)
         {
             _logger.LogError(

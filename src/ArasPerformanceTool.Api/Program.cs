@@ -85,6 +85,7 @@ builder.Services.AddTransient<DeleteWorkload>();
 
 // Register the RunExecutionCoordinator as a singleton
 builder.Services.AddSingleton<RunExecutionCoordinator>();
+builder.Services.AddSingleton<ExpiredArasTokenStore>();
 
 //register the PdfReportGenerator for dependency injection
 builder.Services.AddTransient<PdfReportGenerator>();

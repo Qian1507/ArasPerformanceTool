@@ -6,6 +6,7 @@ using ArasPerformanceTool.Engine.Aras;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using ArasPerformanceTool.Api.Services;
 
 namespace ArasPerformanceTool.Api.Controllers;
 
@@ -27,19 +28,22 @@ public sealed class AuthController : ControllerBase
     private readonly ILogger<AuthController> _logger;
     private readonly IArasClient _arasClient;
     private readonly IAntiforgery _antiforgery;
+    private readonly ExpiredArasTokenStore _expiredArasTokens;
 
     public AuthController(
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         ILogger<AuthController> logger,
         IArasClient arasClient,
-        IAntiforgery antiforgery)
+        IAntiforgery antiforgery,
+        ExpiredArasTokenStore expiredArasTokens)
     {
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _logger = logger;
         _arasClient = arasClient;
         _antiforgery = antiforgery;
+        _expiredArasTokens = expiredArasTokens;
     }
 
     // ---------------------------------------------------------
@@ -358,7 +362,14 @@ public sealed class AuthController : ControllerBase
                 authenticated = false
             });
         }
-
+        if (_expiredArasTokens.IsExpired(token))
+        {
+            return Ok(new
+            {
+                authenticated = false,
+                requiresLogin = true
+            });
+        }
         return Ok(new
         {
             authenticated = true,
