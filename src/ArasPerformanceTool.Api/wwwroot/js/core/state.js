@@ -3,7 +3,8 @@ export const appState = {
     requiresLogin: true,
     authUiRevision: 0,
     submitting: false,
-    currentJobId: null
+    currentJobId: null,
+    reportsAvailable: false
 };
 
 // Shared DOM & formatting utilities
@@ -42,3 +43,4 @@ export const BENCHMARK_LIMITS = {
     minConcurrency: 1,
     maxConcurrency: 50
 };
+

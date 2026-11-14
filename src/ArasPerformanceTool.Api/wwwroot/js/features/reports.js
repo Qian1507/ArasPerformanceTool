@@ -4,7 +4,9 @@ const downloadJsonBtn = byId("download-json-btn");
 const downloadCsvBtn = byId("download-csv-btn");
 
 export function syncReportButtons() {
-    const disabled = !appState.currentJobId;
+    const disabled =
+        !appState.currentJobId ||
+        !appState.reportsAvailable;
 
     downloadJsonBtn.disabled = disabled;
     downloadCsvBtn.disabled = disabled;

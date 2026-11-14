@@ -1073,7 +1073,8 @@ public async Task<IActionResult> StartBenchmark(
             ErrorMessage: errorMessage,
             Verification: verification,
             QueryResult: queryResult,
-            RequiresLogin: requiresLogin);
+            RequiresLogin: requiresLogin,
+            ReportsAvailable: _fileResultStore.Exists(jobId));
 
         Jobs[jobId] = response;
 

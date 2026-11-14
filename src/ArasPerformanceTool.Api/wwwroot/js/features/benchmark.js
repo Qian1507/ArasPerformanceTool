@@ -120,6 +120,9 @@ function resetMetrics() {
 
 export function clearResults() {
     appState.currentJobId = null;
+    appState.reportsAvailable = false;
+
+    appState.currentJobId = null;
 
     resultsSection.classList.add("hidden");
 
@@ -328,6 +331,9 @@ function showError(message) {
 }
 
 function renderResults(data, isOk) {
+    appState.reportsAvailable =
+    data.reportsAvailable === true;
+
     resultsSection.classList.remove("hidden");
 
     errorBanner.classList.add("hidden");
@@ -501,12 +507,14 @@ async function handleBenchmarkSubmit(event) {
             );
         }
 
-        if (
+       if (
             response.status === 401 &&
             data.requiresLogin === true
         ) {
             // Preserve the old run's result and available report entry.
             appState.currentJobId = data.jobId || null;
+            appState.reportsAvailable =
+                data.reportsAvailable === true;
 
             if (appState.currentJobId) {
                 renderResults(data, false);
